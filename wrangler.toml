@@ -1,0 +1,6 @@
+name = "linkkivahti"
+main = "build/index.js"
+compatibility_date = "2025-11-12"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"

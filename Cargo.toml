@@ -1,0 +1,12 @@
+[package]
+name = "linkkivahti"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kirill Pimenov <kirill@pimenov.cc>"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = { version = "0.6" }
+worker-macros = { version = "0.6" }
