@@ -5,8 +5,20 @@ edition = "2021"
 authors = ["Kirill Pimenov <kirill@pimenov.cc>"]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 worker = { version = "0.6" }
 worker-macros = { version = "0.6" }
+ssri = "9.2"
+static-toml = "1.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Link Time Optimization
+codegen-units = 1      # Better optimization
+strip = true           # Remove debug symbols
+panic = "abort"        # Smaller panic handler

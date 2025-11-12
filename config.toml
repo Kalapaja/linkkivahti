@@ -1,9 +1,18 @@
+# Linkkivahti Configuration
+# This file is parsed at compile time and embedded in the WASM binary
+
 version = "1.0"
+
+# Resources to monitor
+# Each resource must have:
+#   - url: The URL to check
+#   - sri: Expected Subresource Integrity hash (mandatory)
 
 [[resources]]
 url = "https://cdn.donations.kalatori.org/donation-widget.v0.1.0.js"
 sri = "sha384-v5A9WpDBhOK/FsTACnquHK+dgfL9nZO1qHEx00HKn5VsAz1xBp9KNOLuJmPoq1mR"
 
-[[resources]]
-url = "https://cdn.donations.kalatori.org/donation-widget.v0.2.0.js"
-sri = "sha256-abcd"
+# Add more resources to monitor:
+# [[resources]]
+# url = "https://example.com/style.css"
+# sri = "sha384-..."
