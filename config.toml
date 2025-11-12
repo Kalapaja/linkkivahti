@@ -1,0 +1,9 @@
+version = "1.0"
+
+[[resources]]
+url = "https://cdn.donations.kalatori.org/donation-widget.v0.1.0.js"
+sri = "sha384-v5A9WpDBhOK/FsTACnquHK+dgfL9nZO1qHEx00HKn5VsAz1xBp9KNOLuJmPoq1mR"
+
+[[resources]]
+url = "https://cdn.donations.kalatori.org/donation-widget.v0.2.0.js"
+sri = "sha256-abcd"
