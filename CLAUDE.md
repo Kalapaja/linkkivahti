@@ -593,4 +593,4 @@ wrangler tail --format json
 
 ## License
 
-MIT OR Apache-2.0
+Linkkivahti (Link Watcher) is distributed under the GNU General Public License, version 3 or (at your option) any later version. Copyright (C) 2025 Kalapaja Oy.

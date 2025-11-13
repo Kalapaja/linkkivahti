@@ -2,7 +2,10 @@
 name = "linkkivahti"
 version = "0.1.0"
 edition = "2021"
-authors = ["Kirill Pimenov <kirill@pimenov.cc>"]
+authors = ["Kirill Pimenov <kirill@kalapaja.fi>"]
+license = "GPL-3.0-or-later"
+description = "A Cloudflare Worker that monitors the integrity of linked resources using Subresource Integrity (SRI) checks."
+repository = "https://github.com/kalapaja/linkkivahti"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

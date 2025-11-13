@@ -400,10 +400,13 @@ Contributions welcome! Please ensure:
 1. Code passes `cargo check` and `cargo test`
 2. New features documented in README and CLAUDE.md
 3. Follows existing code style
+4. Contributions are provided under the project's GPL-3.0-or-later license
 
 ## License
 
-MIT OR Apache-2.0
+Copyright (C) 2025 Kalapaja Oy.
+
+Licensed under the GNU General Public License, version 3 or (at your option) any later version. See `LICENSE` for the full text.
 
 ## References
 
