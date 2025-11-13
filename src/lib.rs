@@ -8,7 +8,25 @@ mod config;
 mod notify;
 
 use checker::check_resource;
+use futures::future::join_all;
+use serde::Serialize;
 use worker::*;
+
+/// Status response structure for the / endpoint
+#[derive(Serialize)]
+struct StatusResponse {
+    status: &'static str,
+    worker: &'static str,
+    version: &'static str,
+    resources: Vec<ResourceInfo>,
+}
+
+/// Individual resource information for status endpoint
+#[derive(Serialize)]
+struct ResourceInfo {
+    url: &'static str,
+    sri: &'static str,
+}
 
 /// Scheduled event handler - triggered by cron
 ///
@@ -20,25 +38,26 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         config::resource_count()
     );
 
-    let mut results = Vec::new();
+    // Check all resources in parallel
+    let check_futures: Vec<_> = config::resources()
+        .iter()
+        .map(|resource| check_resource(&resource.url, &resource.sri))
+        .collect();
 
-    // Check all configured resources
-    for resource in config::resources() {
-        let result = check_resource(&resource.url, &resource.sri).await;
+    let results = join_all(check_futures).await;
 
-        // Send notification if there's a problem
+    // Send notifications for any problems
+    for result in &results {
         if result.has_problem() {
             console_error!(
                 "Problem detected: {} - {}",
                 result.url,
                 result.description()
             );
-            if let Err(e) = notify::send_failure_notification(&env, &result).await {
+            if let Err(e) = notify::send_failure_notification(&env, result).await {
                 console_error!("Failed to send notification: {}", e);
             }
         }
-
-        results.push(result);
     }
 
     // Log summary
@@ -73,55 +92,26 @@ async fn fetch(req: Request, _env: Env, _ctx: Context) -> Result<Response> {
 ///
 /// Returns combined health status and configuration in a single response
 fn handle_status() -> Result<Response> {
-    let mut status_json = format!(
-        r#"{{
-  "status": "healthy",
-  "worker": "linkkivahti",
-  "version": "{}",
-  "resources": ["#,
-        config::version(),
-    );
+    let resources: Vec<ResourceInfo> = config::resources()
+        .iter()
+        .map(|r| ResourceInfo {
+            url: r.url,
+            sri: r.sri,
+        })
+        .collect();
 
-    for (i, resource) in config::resources().iter().enumerate() {
-        if i > 0 {
-            status_json.push_str(",");
-        }
-        status_json.push_str(&format!(
-            r#"
-    {{"url": "{}", "sri": "{}"}}"#,
-            escape_json(&resource.url),
-            escape_json(&resource.sri)
-        ));
-    }
+    let status = StatusResponse {
+        status: "healthy",
+        worker: "linkkivahti",
+        version: config::version(),
+        resources,
+    };
 
-    status_json.push_str(
-        r#"
-  ]
-}"#,
-    );
-
-    let mut response = Response::ok(status_json)?;
-    let headers = response.headers_mut();
-    headers.set("Content-Type", "application/json")?;
-    Ok(response)
-}
-
-/// Escape a string for safe inclusion in JSON
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    Response::from_json(&status)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_escape_json() {
-        assert_eq!(escape_json("hello"), "hello");
-        assert_eq!(escape_json(r#"test "quotes""#), r#"test \"quotes\""#);
-    }
+    // No tests needed for this module currently
+    // Integration tests would require Workers runtime
 }

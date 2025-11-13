@@ -47,9 +47,9 @@ mod tests {
             assert!(!resource.url.is_empty(), "Resource URL should not be empty");
             assert!(!resource.sri.is_empty(), "Resource SRI should not be empty");
             assert!(
-                resource.sri.starts_with("sha256-") 
-                || resource.sri.starts_with("sha384-") 
-                || resource.sri.starts_with("sha512-"),
+                resource.sri.starts_with("sha256-")
+                    || resource.sri.starts_with("sha384-")
+                    || resource.sri.starts_with("sha512-"),
                 "SRI should start with valid algorithm prefix"
             );
         }

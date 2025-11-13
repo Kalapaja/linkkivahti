@@ -1,12 +1,7 @@
 //! Link availability and SRI verification module
 
 use ssri::Integrity;
-use std::borrow::Cow;
 use worker::*;
-
-/// HTTP success status code range
-const HTTP_SUCCESS_MIN: u16 = 200;
-const HTTP_SUCCESS_MAX: u16 = 300;
 
 /// Typed error for check failures
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +10,7 @@ pub enum CheckError {
     InvalidSri,
     /// Network request failed
     FetchFailed,
-    /// HTTP error response
+    /// HTTP error response, with code
     HttpError(u16),
     /// Failed to read response body
     BodyReadFailed,
@@ -24,12 +19,12 @@ pub enum CheckError {
 impl CheckError {
     /// Get a human-readable description of the error
     #[inline]
-    pub fn description(&self) -> Cow<'static, str> {
+    pub fn description(&self) -> String {
         match self {
-            Self::InvalidSri => Cow::Borrowed("Invalid SRI format"),
-            Self::FetchFailed => Cow::Borrowed("Fetch failed"),
-            Self::HttpError(code) => Cow::Owned(format!("HTTP error: {}", code)),
-            Self::BodyReadFailed => Cow::Borrowed("Failed to read response body"),
+            Self::InvalidSri => "Invalid SRI format".to_string(),
+            Self::FetchFailed => "Fetch failed".to_string(),
+            Self::HttpError(code) => format!("HTTP error: {}", code),
+            Self::BodyReadFailed => "Failed to read response body".to_string(),
         }
     }
 }
@@ -37,7 +32,7 @@ impl CheckError {
 /// Result of a link check operation
 #[derive(Debug, Clone)]
 pub struct CheckResult {
-    pub url: String,
+    pub url: &'static str,
     pub success: bool,
     pub status_code: Option<u16>,
     pub error: Option<CheckError>,
@@ -47,9 +42,9 @@ pub struct CheckResult {
 impl CheckResult {
     /// Create a successful check result
     #[inline]
-    pub fn success(url: &str, status_code: u16, sri_valid: bool) -> Self {
+    pub fn success(url: &'static str, status_code: u16, sri_valid: bool) -> Self {
         Self {
-            url: url.to_string(),
+            url,
             success: true,
             status_code: Some(status_code),
             error: None,
@@ -59,9 +54,9 @@ impl CheckResult {
 
     /// Create a failed check result
     #[inline]
-    pub fn failure(url: &str, error: CheckError) -> Self {
+    pub fn failure(url: &'static str, error: CheckError) -> Self {
         Self {
-            url: url.to_string(),
+            url,
             success: false,
             status_code: None,
             error: Some(error),
@@ -76,22 +71,22 @@ impl CheckResult {
     }
 
     /// Get a human-readable description of the result
-    pub fn description(&self) -> Cow<'static, str> {
+    pub fn description(&self) -> String {
         if !self.success {
             if let Some(error) = &self.error {
-                Cow::Owned(format!("Failed: {}", error.description()))
+                format!("Failed: {}", error.description())
             } else {
-                Cow::Borrowed("Failed: Unknown error")
+                "Failed: Unknown error".to_string()
             }
         } else if self.sri_valid == Some(false) {
             match self.status_code {
-                Some(code) => Cow::Owned(format!("SRI mismatch (HTTP {})", code)),
-                None => Cow::Borrowed("SRI mismatch"),
+                Some(code) => format!("SRI mismatch (HTTP {})", code),
+                None => "SRI mismatch".to_string(),
             }
         } else {
             match self.status_code {
-                Some(code) => Cow::Owned(format!("OK (HTTP {})", code)),
-                None => Cow::Borrowed("OK"),
+                Some(code) => format!("OK (HTTP {})", code),
+                None => "OK".to_string(),
             }
         }
     }
@@ -109,7 +104,7 @@ impl CheckResult {
 ///
 /// # Returns
 /// A `CheckResult` containing the outcome of the check
-pub async fn check_resource(url: &str, expected_sri: &str) -> CheckResult {
+pub async fn check_resource(url: &'static str, expected_sri: &str) -> CheckResult {
     console_log!("Checking: {}", url);
 
     // Parse expected SRI - use borrowed string on success path
@@ -132,7 +127,7 @@ pub async fn check_resource(url: &str, expected_sri: &str) -> CheckResult {
 
     // Check if response is successful (2xx status codes)
     // Fail fast before reading body
-    if !(HTTP_SUCCESS_MIN..HTTP_SUCCESS_MAX).contains(&status_code) {
+    if !(200..300).contains(&status_code) {
         return CheckResult::failure(url, CheckError::HttpError(status_code));
     }
 

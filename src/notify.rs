@@ -1,6 +1,7 @@
 //! Notification module for sending alerts about check failures
 
 use crate::checker::CheckResult;
+use serde::Serialize;
 use worker::*;
 
 /// Supported webhook service types
@@ -16,6 +17,71 @@ pub enum WebhookService {
     Generic,
 }
 
+// Discord webhook payload structures
+#[derive(Serialize)]
+struct DiscordPayload {
+    embeds: Vec<DiscordEmbed>,
+}
+
+#[derive(Serialize)]
+struct DiscordEmbed {
+    title: &'static str,
+    description: String,
+    color: u32,
+    fields: Vec<DiscordField>,
+}
+
+#[derive(Serialize)]
+struct DiscordField {
+    name: &'static str,
+    value: String,
+    inline: bool,
+}
+
+// Slack webhook payload structures
+#[derive(Serialize)]
+struct SlackPayload {
+    blocks: Vec<SlackBlock>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum SlackBlock {
+    #[serde(rename = "header")]
+    Header { text: SlackText },
+    #[serde(rename = "section")]
+    Section { fields: Vec<SlackText> },
+    #[serde(rename = "context")]
+    Context { elements: Vec<SlackText> },
+}
+
+#[derive(Serialize)]
+struct SlackText {
+    #[serde(rename = "type")]
+    text_type: &'static str,
+    text: String,
+}
+
+// Zulip webhook payload structures
+#[derive(Serialize)]
+struct ZulipPayload {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    to: &'static str,
+    topic: &'static str,
+    content: String,
+}
+
+// Generic webhook payload structures
+#[derive(Serialize)]
+struct GenericPayload {
+    timestamp: String,
+    status: &'static str,
+    url: &'static str,
+    error: String,
+    worker: &'static str,
+}
+
 impl WebhookService {
     /// Detect service type from a webhook URL by inspecting its domain
     ///
@@ -25,13 +91,32 @@ impl WebhookService {
     /// # Returns
     /// Detected WebhookService type
     pub fn from_url(url: &str) -> Self {
-        let url_lower = url.to_lowercase();
+        // Helper for case-insensitive substring search without allocation
+        fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+            if needle.is_empty() {
+                return true;
+            }
+            haystack.len() >= needle.len()
+                && haystack
+                    .as_bytes()
+                    .windows(needle.len())
+                    .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+        }
 
-        if url_lower.contains("discord.com") || url_lower.contains("discordapp.com") {
+        // Check for Discord domains
+        if contains_ignore_ascii_case(url, "discord.com")
+            || contains_ignore_ascii_case(url, "discordapp.com")
+        {
             Self::Discord
-        } else if url_lower.contains("hooks.slack.com") || url_lower.contains("slack.com/api/") {
+        // Check for Slack domains
+        } else if contains_ignore_ascii_case(url, "hooks.slack.com")
+            || contains_ignore_ascii_case(url, "slack.com/api/")
+        {
             Self::Slack
-        } else if url_lower.contains("zulipchat.com") || url_lower.contains("/api/v1/messages") {
+        // Check for Zulip domains (case-sensitive for path part)
+        } else if contains_ignore_ascii_case(url, "zulipchat.com")
+            || url.contains("/api/v1/messages")
+        {
             Self::Zulip
         } else {
             Self::Generic
@@ -46,79 +131,79 @@ impl WebhookService {
     ///
     /// # Returns
     /// JSON payload string appropriate for the service
-    fn build_payload(&self, result: &CheckResult, timestamp: &str) -> String {
-        match self {
-            Self::Discord => Self::build_discord_payload(result, timestamp),
-            Self::Slack => Self::build_slack_payload(result, timestamp),
-            Self::Zulip => Self::build_zulip_payload(result, timestamp),
-            Self::Generic => Self::build_generic_payload(result, timestamp),
-        }
+    fn build_payload(&self, result: &CheckResult, timestamp: &str) -> Result<String> {
+        let json = match self {
+            Self::Discord => Self::build_discord_payload(result, timestamp)?,
+            Self::Slack => Self::build_slack_payload(result, timestamp)?,
+            Self::Zulip => Self::build_zulip_payload(result, timestamp)?,
+            Self::Generic => Self::build_generic_payload(result, timestamp)?,
+        };
+        Ok(json)
     }
 
     /// Build Discord webhook payload with embeds
-    fn build_discord_payload(result: &CheckResult, timestamp: &str) -> String {
-        format!(
-            r#"{{
-  "embeds": [{{
-    "title": "🔗 Link Check Failed",
-    "description": "**{}**",
-    "color": 15158332,
-    "fields": [
-      {{"name": "Status", "value": "{}", "inline": true}},
-      {{"name": "Time", "value": "{}", "inline": true}}
-    ]
-  }}]
-}}"#,
-            escape_json(&result.url),
-            escape_json(&result.description()),
-            timestamp
-        )
+    fn build_discord_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+        let payload = DiscordPayload {
+            embeds: vec![DiscordEmbed {
+                title: "🔗 Link Check Failed",
+                description: format!("**{}**", result.url),
+                color: 15158332, // Red color
+                fields: vec![
+                    DiscordField {
+                        name: "Status",
+                        value: result.description().to_string(),
+                        inline: true,
+                    },
+                    DiscordField {
+                        name: "Time",
+                        value: timestamp.to_string(),
+                        inline: true,
+                    },
+                ],
+            }],
+        };
+
+        serde_json::to_string(&payload)
+            .map_err(|e| Error::RustError(format!("Failed to serialize Discord payload: {}", e)))
     }
 
     /// Build Slack webhook payload with Block Kit
-    fn build_slack_payload(result: &CheckResult, timestamp: &str) -> String {
-        format!(
-            r#"{{
-  "blocks": [
-    {{
-      "type": "header",
-      "text": {{
-        "type": "plain_text",
-        "text": "🔗 Link Check Failed"
-      }}
-    }},
-    {{
-      "type": "section",
-      "fields": [
-        {{
-          "type": "mrkdwn",
-          "text": "*URL:*\n{}"
-        }},
-        {{
-          "type": "mrkdwn",
-          "text": "*Status:*\n{}"
-        }}
-      ]
-    }},
-    {{
-      "type": "context",
-      "elements": [
-        {{
-          "type": "mrkdwn",
-          "text": "Time: {} | Worker: linkkivahti"
-        }}
-      ]
-    }}
-  ]
-}}"#,
-            escape_json(&result.url),
-            escape_json(&result.description()),
-            timestamp
-        )
+    fn build_slack_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+        let payload = SlackPayload {
+            blocks: vec![
+                SlackBlock::Header {
+                    text: SlackText {
+                        text_type: "plain_text",
+                        text: "🔗 Link Check Failed".to_string(),
+                    },
+                },
+                SlackBlock::Section {
+                    fields: vec![
+                        SlackText {
+                            text_type: "mrkdwn",
+                            text: format!("*URL:*\n{}", result.url),
+                        },
+                        SlackText {
+                            text_type: "mrkdwn",
+                            text: format!("*Status:*\n{}", result.description()),
+                        },
+                    ],
+                },
+                SlackBlock::Context {
+                    elements: vec![SlackText {
+                        text_type: "mrkdwn",
+                        text: format!("Time: {} | Worker: linkkivahti", timestamp),
+                    }],
+                },
+            ],
+        };
+
+        serde_json::to_string(&payload)
+            .map_err(|e| Error::RustError(format!("Failed to serialize Slack payload: {}", e)))
     }
 
     /// Build Zulip webhook payload with markdown content
-    fn build_zulip_payload(result: &CheckResult, timestamp: &str) -> String {
+    fn build_zulip_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
         let content = format!(
             "## 🔗 Link Check Failed\n\n**URL:** {}\n\n**Status:** {}\n\n**Time:** {}",
             result.url,
@@ -126,31 +211,29 @@ impl WebhookService {
             timestamp
         );
 
-        format!(
-            r#"{{
-  "type": "stream",
-  "to": "monitoring",
-  "topic": "Link Checks",
-  "content": "{}"
-}}"#,
-            escape_json(&content)
-        )
+        let payload = ZulipPayload {
+            message_type: "stream",
+            to: "monitoring",
+            topic: "Link Checks",
+            content,
+        };
+
+        serde_json::to_string(&payload)
+            .map_err(|e| Error::RustError(format!("Failed to serialize Zulip payload: {}", e)))
     }
 
     /// Build generic JSON webhook payload
-    fn build_generic_payload(result: &CheckResult, timestamp: &str) -> String {
-        format!(
-            r#"{{
-  "timestamp": "{}",
-  "status": "failure",
-  "url": "{}",
-  "error": "{}",
-  "worker": "linkkivahti"
-}}"#,
-            timestamp,
-            escape_json(&result.url),
-            escape_json(&result.description())
-        )
+    fn build_generic_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+        let payload = GenericPayload {
+            timestamp: timestamp.to_string(),
+            status: "failure",
+            url: result.url,
+            error: result.description().to_string(),
+            worker: "linkkivahti",
+        };
+
+        serde_json::to_string(&payload)
+            .map_err(|e| Error::RustError(format!("Failed to serialize generic payload: {}", e)))
     }
 
     /// Get service-specific HTTP headers
@@ -227,7 +310,7 @@ pub async fn send_failure_notification(env: &Env, result: &CheckResult) -> Resul
 
     // Build and send notification
     let timestamp = get_timestamp();
-    let payload = service.build_payload(result, &timestamp);
+    let payload = service.build_payload(result, &timestamp)?;
 
     send_webhook(&webhook_url, &payload, service).await
 }
@@ -264,15 +347,6 @@ fn detect_webhook_service(env: &Env, webhook_url: &str) -> WebhookService {
 
     // Auto-detect from URL
     WebhookService::from_url(webhook_url)
-}
-
-/// Escape a string for safe inclusion in JSON
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 /// Send a webhook notification via HTTP POST
@@ -345,14 +419,6 @@ fn get_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_escape_json() {
-        assert_eq!(escape_json("hello"), "hello");
-        assert_eq!(escape_json(r#"hello "world""#), r#"hello \"world\""#);
-        assert_eq!(escape_json("line1\nline2"), "line1\\nline2");
-        assert_eq!(escape_json("tab\there"), "tab\\there");
-    }
 
     #[test]
     fn test_webhook_service_from_url_discord() {
@@ -434,7 +500,9 @@ mod tests {
         let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
-        let payload = WebhookService::Discord.build_payload(&result, timestamp);
+        let payload = WebhookService::Discord
+            .build_payload(&result, timestamp)
+            .unwrap();
 
         // Verify Discord-specific format
         assert!(payload.contains("https://example.com/test.js"));
@@ -451,7 +519,9 @@ mod tests {
             CheckResult::failure("https://example.com/test.js", CheckError::BodyReadFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
-        let payload = WebhookService::Slack.build_payload(&result, timestamp);
+        let payload = WebhookService::Slack
+            .build_payload(&result, timestamp)
+            .unwrap();
 
         // Verify Slack-specific format
         assert!(payload.contains("https://example.com/test.js"));
@@ -468,14 +538,16 @@ mod tests {
             CheckResult::failure("https://example.com/test.js", CheckError::HttpError(404));
         let timestamp = "2025-11-12T10:00:00Z";
 
-        let payload = WebhookService::Zulip.build_payload(&result, timestamp);
+        let payload = WebhookService::Zulip
+            .build_payload(&result, timestamp)
+            .unwrap();
 
         // Verify Zulip-specific format
         assert!(payload.contains("https://example.com/test.js"));
         assert!(payload.contains("HTTP error: 404"));
-        assert!(payload.contains(r#""type": "stream""#));
-        assert!(payload.contains(r#""to": "monitoring""#));
-        assert!(payload.contains(r#""topic": "Link Checks""#));
+        assert!(payload.contains(r#""type":"stream""#));
+        assert!(payload.contains(r#""to":"monitoring""#));
+        assert!(payload.contains(r#""topic":"Link Checks""#));
         assert!(payload.contains("## 🔗 Link Check Failed"));
     }
 
@@ -486,12 +558,14 @@ mod tests {
         let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
-        let payload = WebhookService::Generic.build_payload(&result, timestamp);
+        let payload = WebhookService::Generic
+            .build_payload(&result, timestamp)
+            .unwrap();
 
         // Verify generic format
         assert!(payload.contains("https://example.com/test.js"));
         assert!(payload.contains("Fetch failed"));
-        assert!(payload.contains(r#""status": "failure""#));
-        assert!(payload.contains(r#""worker": "linkkivahti""#));
+        assert!(payload.contains(r#""status":"failure""#));
+        assert!(payload.contains(r#""worker":"linkkivahti""#));
     }
 }
