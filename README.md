@@ -68,11 +68,35 @@ Set up webhook URL as a secret (keeps auth tokens private):
 wrangler secret put WEBHOOK_URL
 ```
 
-Paste your webhook URL when prompted. Examples:
+Paste your webhook URL when prompted. Linkkivahti **automatically detects** the webhook service based on the URL and formats notifications accordingly.
+
+**Supported services:**
 
 - **Discord**: `https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_TOKEN`
+  - Auto-detected from domain, uses rich embeds format
+  
 - **Slack**: `https://hooks.slack.com/services/YOUR/WEBHOOK/URL`
-- **Generic**: Any endpoint accepting JSON POST
+  - Auto-detected from domain, uses Block Kit format
+  
+- **Zulip**: `https://yourorg.zulipchat.com/api/v1/messages?api_key=YOUR_API_KEY`
+  - Auto-detected from domain or `/api/v1/messages` path
+  - Sends to "monitoring" stream with "Link Checks" topic
+  
+- **Generic**: Any other endpoint accepting JSON POST
+  - Simple JSON format for custom integrations
+
+**Manual override** (optional):
+
+If your webhook service uses a custom domain, you can force a specific format:
+
+```bash
+# Set the webhook URL
+wrangler secret put WEBHOOK_URL
+
+# Set the service type override
+wrangler secret put WEBHOOK_SERVICE
+# Enter one of: discord, slack, zulip, generic
+```
 
 ### 4. Configure Cron Schedule
 
@@ -188,10 +212,20 @@ crons = ["0 * * * *"]  # Adjust schedule here
 Set via `wrangler secret put`:
 
 - `WEBHOOK_URL`: Webhook endpoint for failure notifications (optional)
+  - Supports Discord, Slack, Zulip, and generic webhooks
+  - Service type auto-detected from URL
+  
+- `WEBHOOK_SERVICE`: Override auto-detection (optional)
+  - Values: `discord`, `slack`, `zulip`, `generic`
+  - Only needed for custom domains that don't match standard patterns
 
-## Webhook Notification Format
+## Webhook Notification Formats
 
-When a check fails, linkkivahti sends a POST request with:
+Linkkivahti automatically formats notifications based on the detected webhook service.
+
+### Discord Format
+
+Rich embeds with color coding:
 
 ```json
 {
@@ -201,11 +235,66 @@ When a check fails, linkkivahti sends a POST request with:
       "description": "**https://example.com/file.js**",
       "color": 15158332,
       "fields": [
-        {"name": "Status", "value": "SRI mismatch (HTTP 200)", "inline": true},
+        {"name": "Status", "value": "SRI mismatch", "inline": true},
         {"name": "Time", "value": "2025-11-12T10:30:00Z", "inline": true}
       ]
     }
   ]
+}
+```
+
+### Slack Format
+
+Block Kit with structured sections:
+
+```json
+{
+  "blocks": [
+    {
+      "type": "header",
+      "text": {"type": "plain_text", "text": "🔗 Link Check Failed"}
+    },
+    {
+      "type": "section",
+      "fields": [
+        {"type": "mrkdwn", "text": "*URL:*\nhttps://example.com/file.js"},
+        {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch"}
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {"type": "mrkdwn", "text": "Time: 2025-11-12T10:30:00Z | Worker: linkkivahti"}
+      ]
+    }
+  ]
+}
+```
+
+### Zulip Format
+
+Stream message with markdown:
+
+```json
+{
+  "type": "stream",
+  "to": "monitoring",
+  "topic": "Link Checks",
+  "content": "## 🔗 Link Check Failed\n\n**URL:** https://example.com/file.js\n\n**Status:** SRI mismatch\n\n**Time:** 2025-11-12T10:30:00Z"
+}
+```
+
+### Generic Format
+
+Simple JSON for custom integrations:
+
+```json
+{
+  "timestamp": "2025-11-12T10:30:00Z",
+  "status": "failure",
+  "url": "https://example.com/file.js",
+  "error": "SRI mismatch",
+  "worker": "linkkivahti"
 }
 ```
 

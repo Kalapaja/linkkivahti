@@ -175,21 +175,120 @@ async fn verify_resource(url: &str, expected_sri: &str) -> Result<bool> {
 1. **Console Logging**: Always log all checks for debugging via `wrangler tail`
 2. **Webhook Notifications**: Send alerts to external systems on failures
 
-**Webhook Payload**:
-```json
-{
-  "timestamp": "2025-11-12T10:30:00Z",
-  "status": "failure",
-  "url": "https://cdn.example.com/widget.js",
-  "error": "SRI mismatch: expected sha384-abc..., got sha384-xyz...",
-  "worker": "linkkivahti"
-}
+#### Supported Webhook Services
+
+Linkkivahti automatically detects the webhook service type based on the URL and formats payloads accordingly:
+
+**Discord** (`discord.com`, `discordapp.com`)
+- Uses Discord webhook embeds format
+- Rich formatting with colors, fields, and inline elements
+- Example payload:
+  ```json
+  {
+    "embeds": [{
+      "title": "🔗 Link Check Failed",
+      "description": "**https://cdn.example.com/widget.js**",
+      "color": 15158332,
+      "fields": [
+        {"name": "Status", "value": "SRI mismatch", "inline": true},
+        {"name": "Time", "value": "2025-11-12T10:30:00Z", "inline": true}
+      ]
+    }]
+  }
+  ```
+
+**Slack** (`hooks.slack.com`, `slack.com/api/`)
+- Uses Slack Block Kit format
+- Structured sections with markdown support
+- Example payload:
+  ```json
+  {
+    "blocks": [
+      {
+        "type": "header",
+        "text": {"type": "plain_text", "text": "🔗 Link Check Failed"}
+      },
+      {
+        "type": "section",
+        "fields": [
+          {"type": "mrkdwn", "text": "*URL:*\nhttps://cdn.example.com/widget.js"},
+          {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch"}
+        ]
+      }
+    ]
+  }
+  ```
+
+**Zulip** (`zulipchat.com`, `/api/v1/messages`)
+- Sends messages to Zulip streams
+- Markdown-formatted content
+- Default stream: "monitoring", topic: "Link Checks"
+- Example payload:
+  ```json
+  {
+    "type": "stream",
+    "to": "monitoring",
+    "topic": "Link Checks",
+    "content": "## 🔗 Link Check Failed\n\n**URL:** https://cdn.example.com/widget.js\n\n**Status:** SRI mismatch\n\n**Time:** 2025-11-12T10:30:00Z"
+  }
+  ```
+
+**Generic** (fallback for other services)
+- Simple JSON format
+- Example payload:
+  ```json
+  {
+    "timestamp": "2025-11-12T10:30:00Z",
+    "status": "failure",
+    "url": "https://cdn.example.com/widget.js",
+    "error": "SRI mismatch: expected sha384-abc..., got sha384-xyz...",
+    "worker": "linkkivahti"
+  }
+  ```
+
+#### Webhook Configuration
+
+**Required Environment Variable**:
+```bash
+WEBHOOK_URL="https://your-webhook-endpoint"
 ```
 
-**Supported Webhook Targets**:
-- Discord webhooks
-- Slack incoming webhooks
-- Generic JSON webhooks
+**Optional Override**:
+```bash
+WEBHOOK_SERVICE="discord|slack|zulip|generic"
+```
+
+If `WEBHOOK_SERVICE` is not set, the service type is auto-detected from the URL domain.
+
+**Examples**:
+
+```bash
+# Discord (auto-detected)
+WEBHOOK_URL="https://discord.com/api/webhooks/123456/abcdef"
+
+# Slack (auto-detected)
+WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx"
+
+# Zulip (auto-detected)
+WEBHOOK_URL="https://yourorg.zulipchat.com/api/v1/messages?api_key=YOUR_KEY"
+
+# Force specific service for custom domains
+WEBHOOK_URL="https://custom.domain/webhook"
+WEBHOOK_SERVICE="slack"
+```
+
+#### Implementation Details
+
+The notification system uses Rust's idiomatic patterns:
+
+- **`WebhookService` enum**: Type-safe representation of supported services
+- **`impl FromStr`**: Parse service names from environment variables
+- **`impl Display`**: Human-readable service names in logs
+- **`from_url()` method**: Auto-detection logic based on domain patterns
+- **`build_payload()` method**: Service-specific payload formatting
+- **`headers()` method**: Service-specific HTTP headers (e.g., User-Agent for Zulip)
+
+**Code Reference**: See `src/notify.rs` for the complete implementation.
 
 ## Cron Triggers
 
