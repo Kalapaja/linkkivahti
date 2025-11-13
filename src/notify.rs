@@ -429,51 +429,50 @@ mod tests {
 
     #[test]
     fn test_build_webhook_payload_discord() {
-        let result = CheckResult::failure(
-            "https://example.com/test.js".to_string(),
-            "Network timeout".to_string(),
-        );
+        use crate::checker::CheckError;
+
+        let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
         let payload = WebhookService::Discord.build_payload(&result, timestamp);
 
         // Verify Discord-specific format
         assert!(payload.contains("https://example.com/test.js"));
-        assert!(payload.contains("Network timeout"));
+        assert!(payload.contains("Fetch failed"));
         assert!(payload.contains("embeds"));
         assert!(payload.contains("🔗 Link Check Failed"));
     }
 
     #[test]
     fn test_build_webhook_payload_slack() {
-        let result = CheckResult::failure(
-            "https://example.com/test.js".to_string(),
-            "SRI mismatch".to_string(),
-        );
+        use crate::checker::CheckError;
+
+        let result =
+            CheckResult::failure("https://example.com/test.js", CheckError::BodyReadFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
         let payload = WebhookService::Slack.build_payload(&result, timestamp);
 
         // Verify Slack-specific format
         assert!(payload.contains("https://example.com/test.js"));
-        assert!(payload.contains("SRI mismatch"));
+        assert!(payload.contains("Failed to read response body"));
         assert!(payload.contains("blocks"));
         assert!(payload.contains("mrkdwn"));
     }
 
     #[test]
     fn test_build_webhook_payload_zulip() {
-        let result = CheckResult::failure(
-            "https://example.com/test.js".to_string(),
-            "HTTP 404".to_string(),
-        );
+        use crate::checker::CheckError;
+
+        let result =
+            CheckResult::failure("https://example.com/test.js", CheckError::HttpError(404));
         let timestamp = "2025-11-12T10:00:00Z";
 
         let payload = WebhookService::Zulip.build_payload(&result, timestamp);
 
         // Verify Zulip-specific format
         assert!(payload.contains("https://example.com/test.js"));
-        assert!(payload.contains("HTTP 404"));
+        assert!(payload.contains("HTTP error: 404"));
         assert!(payload.contains(r#""type": "stream""#));
         assert!(payload.contains(r#""to": "monitoring""#));
         assert!(payload.contains(r#""topic": "Link Checks""#));
@@ -482,17 +481,16 @@ mod tests {
 
     #[test]
     fn test_build_webhook_payload_generic() {
-        let result = CheckResult::failure(
-            "https://example.com/test.js".to_string(),
-            "Network timeout".to_string(),
-        );
+        use crate::checker::CheckError;
+
+        let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
         let payload = WebhookService::Generic.build_payload(&result, timestamp);
 
         // Verify generic format
         assert!(payload.contains("https://example.com/test.js"));
-        assert!(payload.contains("Network timeout"));
+        assert!(payload.contains("Fetch failed"));
         assert!(payload.contains(r#""status": "failure""#));
         assert!(payload.contains(r#""worker": "linkkivahti""#));
     }

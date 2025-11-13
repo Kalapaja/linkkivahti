@@ -1,7 +1,38 @@
 //! Link availability and SRI verification module
 
 use ssri::Integrity;
+use std::borrow::Cow;
 use worker::*;
+
+/// HTTP success status code range
+const HTTP_SUCCESS_MIN: u16 = 200;
+const HTTP_SUCCESS_MAX: u16 = 300;
+
+/// Typed error for check failures
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckError {
+    /// Invalid SRI format in configuration
+    InvalidSri,
+    /// Network request failed
+    FetchFailed,
+    /// HTTP error response
+    HttpError(u16),
+    /// Failed to read response body
+    BodyReadFailed,
+}
+
+impl CheckError {
+    /// Get a human-readable description of the error
+    #[inline]
+    pub fn description(&self) -> Cow<'static, str> {
+        match self {
+            Self::InvalidSri => Cow::Borrowed("Invalid SRI format"),
+            Self::FetchFailed => Cow::Borrowed("Fetch failed"),
+            Self::HttpError(code) => Cow::Owned(format!("HTTP error: {}", code)),
+            Self::BodyReadFailed => Cow::Borrowed("Failed to read response body"),
+        }
+    }
+}
 
 /// Result of a link check operation
 #[derive(Debug, Clone)]
@@ -9,49 +40,59 @@ pub struct CheckResult {
     pub url: String,
     pub success: bool,
     pub status_code: Option<u16>,
-    pub error_message: Option<String>,
+    pub error: Option<CheckError>,
     pub sri_valid: Option<bool>,
 }
 
 impl CheckResult {
     /// Create a successful check result
-    pub fn success(url: String, status_code: u16, sri_valid: bool) -> Self {
+    #[inline]
+    pub fn success(url: &str, status_code: u16, sri_valid: bool) -> Self {
         Self {
-            url,
+            url: url.to_string(),
             success: true,
             status_code: Some(status_code),
-            error_message: None,
+            error: None,
             sri_valid: Some(sri_valid),
         }
     }
 
     /// Create a failed check result
-    pub fn failure(url: String, error: String) -> Self {
+    #[inline]
+    pub fn failure(url: &str, error: CheckError) -> Self {
         Self {
-            url,
+            url: url.to_string(),
             success: false,
             status_code: None,
-            error_message: Some(error),
+            error: Some(error),
             sri_valid: None,
         }
     }
 
     /// Check if this result indicates a problem (failure or SRI mismatch)
+    #[inline]
     pub fn has_problem(&self) -> bool {
         !self.success || self.sri_valid == Some(false)
     }
 
     /// Get a human-readable description of the result
-    pub fn description(&self) -> String {
+    pub fn description(&self) -> Cow<'static, str> {
         if !self.success {
-            format!("Failed: {}", self.error_message.as_ref().unwrap())
+            if let Some(error) = &self.error {
+                Cow::Owned(format!("Failed: {}", error.description()))
+            } else {
+                Cow::Borrowed("Failed: Unknown error")
+            }
         } else if self.sri_valid == Some(false) {
-            format!(
-                "SRI mismatch (HTTP {})",
-                self.status_code.unwrap_or(0)
-            )
+            match self.status_code {
+                Some(code) => Cow::Owned(format!("SRI mismatch (HTTP {})", code)),
+                None => Cow::Borrowed("SRI mismatch"),
+            }
         } else {
-            format!("OK (HTTP {})", self.status_code.unwrap_or(0))
+            match self.status_code {
+                Some(code) => Cow::Owned(format!("OK (HTTP {})", code)),
+                None => Cow::Borrowed("OK"),
+            }
         }
     }
 }
@@ -71,43 +112,35 @@ impl CheckResult {
 pub async fn check_resource(url: &str, expected_sri: &str) -> CheckResult {
     console_log!("Checking: {}", url);
 
-    // Parse expected SRI
+    // Parse expected SRI - use borrowed string on success path
     let integrity = match expected_sri.parse::<Integrity>() {
         Ok(i) => i,
-        Err(e) => {
-            return CheckResult::failure(
-                url.to_string(),
-                format!("Invalid SRI format: {}", e),
-            );
+        Err(_) => {
+            return CheckResult::failure(url, CheckError::InvalidSri);
         }
     };
 
     // Fetch the resource
     let mut response = match fetch_resource(url).await {
         Ok(r) => r,
-        Err(e) => {
-            return CheckResult::failure(url.to_string(), format!("Fetch failed: {}", e));
+        Err(_) => {
+            return CheckResult::failure(url, CheckError::FetchFailed);
         }
     };
 
     let status_code = response.status_code();
 
     // Check if response is successful (2xx status codes)
-    if !(200..300).contains(&status_code) {
-        return CheckResult::failure(
-            url.to_string(),
-            format!("HTTP error: {}", status_code),
-        );
+    // Fail fast before reading body
+    if !(HTTP_SUCCESS_MIN..HTTP_SUCCESS_MAX).contains(&status_code) {
+        return CheckResult::failure(url, CheckError::HttpError(status_code));
     }
 
     // Get response body
     let content = match response.bytes().await {
         Ok(c) => c,
-        Err(e) => {
-            return CheckResult::failure(
-                url.to_string(),
-                format!("Failed to read response body: {}", e),
-            );
+        Err(_) => {
+            return CheckResult::failure(url, CheckError::BodyReadFailed);
         }
     };
 
@@ -123,10 +156,11 @@ pub async fn check_resource(url: &str, expected_sri: &str) -> CheckResult {
         }
     };
 
-    CheckResult::success(url.to_string(), status_code, sri_valid)
+    CheckResult::success(url, status_code, sri_valid)
 }
 
 /// Fetch a resource from the given URL using HTTP GET
+#[inline]
 async fn fetch_resource(url: &str) -> Result<Response> {
     let url_parsed = url
         .parse()
@@ -142,32 +176,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_check_error_description() {
+        assert_eq!(CheckError::InvalidSri.description(), "Invalid SRI format");
+        assert_eq!(CheckError::FetchFailed.description(), "Fetch failed");
+        assert_eq!(CheckError::HttpError(404).description(), "HTTP error: 404");
+    }
+
+    #[test]
     fn test_check_result_has_problem() {
-        let success = CheckResult::success("https://example.com".to_string(), 200, true);
+        let success = CheckResult::success("https://example.com", 200, true);
         assert!(!success.has_problem());
 
-        let sri_fail = CheckResult::success("https://example.com".to_string(), 200, false);
+        let sri_fail = CheckResult::success("https://example.com", 200, false);
         assert!(sri_fail.has_problem());
 
-        let failure = CheckResult::failure(
-            "https://example.com".to_string(),
-            "Network error".to_string(),
-        );
+        let failure = CheckResult::failure("https://example.com", CheckError::FetchFailed);
         assert!(failure.has_problem());
     }
 
     #[test]
     fn test_check_result_description() {
-        let success = CheckResult::success("https://example.com".to_string(), 200, true);
+        let success = CheckResult::success("https://example.com", 200, true);
         assert_eq!(success.description(), "OK (HTTP 200)");
 
-        let sri_fail = CheckResult::success("https://example.com".to_string(), 200, false);
+        let sri_fail = CheckResult::success("https://example.com", 200, false);
         assert_eq!(sri_fail.description(), "SRI mismatch (HTTP 200)");
 
-        let failure = CheckResult::failure(
-            "https://example.com".to_string(),
-            "Network error".to_string(),
-        );
-        assert_eq!(failure.description(), "Failed: Network error");
+        let failure = CheckResult::failure("https://example.com", CheckError::FetchFailed);
+        assert_eq!(failure.description(), "Failed: Fetch failed");
+
+        let http_error = CheckResult::failure("https://example.com", CheckError::HttpError(404));
+        assert_eq!(http_error.description(), "Failed: HTTP error: 404");
     }
 }
