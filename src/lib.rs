@@ -6,6 +6,7 @@
 mod checker;
 mod config;
 mod notify;
+pub mod sri;
 
 use checker::check_resource;
 use futures::future::join_all;

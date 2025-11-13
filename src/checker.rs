@@ -1,6 +1,6 @@
 //! Link availability and SRI verification module
 
-use ssri::Integrity;
+use crate::sri::SriHash;
 use worker::*;
 
 /// Typed error for check failures
@@ -107,9 +107,9 @@ impl CheckResult {
 pub async fn check_resource(url: &'static str, expected_sri: &str) -> CheckResult {
     console_log!("Checking: {}", url);
 
-    // Parse expected SRI - use borrowed string on success path
-    let integrity = match expected_sri.parse::<Integrity>() {
-        Ok(i) => i,
+    // Parse expected SRI
+    let sri_hash = match SriHash::parse(expected_sri) {
+        Ok(h) => h,
         Err(_) => {
             return CheckResult::failure(url, CheckError::InvalidSri);
         }
@@ -140,15 +140,12 @@ pub async fn check_resource(url: &'static str, expected_sri: &str) -> CheckResul
     };
 
     // Verify SRI hash
-    let sri_valid = match integrity.check(&content) {
-        Ok(_) => {
-            console_log!("✓ {} - SRI valid", url);
-            true
-        }
-        Err(_) => {
-            console_error!("✗ {} - SRI MISMATCH", url);
-            false
-        }
+    let sri_valid = if sri_hash.verify(&content) {
+        console_log!("✓ {} - SRI valid", url);
+        true
+    } else {
+        console_error!("✗ {} - SRI MISMATCH", url);
+        false
     };
 
     CheckResult::success(url, status_code, sri_valid)
