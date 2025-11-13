@@ -28,7 +28,11 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 
         // Send notification if there's a problem
         if result.has_problem() {
-            console_error!("Problem detected: {} - {}", result.url, result.description());
+            console_error!(
+                "Problem detected: {} - {}",
+                result.url,
+                result.description()
+            );
             if let Err(e) = notify::send_failure_notification(&env, &result).await {
                 console_error!("Failed to send notification: {}", e);
             }
@@ -52,8 +56,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 /// HTTP fetch event handler
 ///
 /// Provides:
-/// - GET /health - Health check endpoint
-/// - GET /config - Configuration dump
+/// - GET / - Combined health and configuration endpoint
 /// - Other paths return 404
 #[event(fetch)]
 async fn fetch(req: Request, _env: Env, _ctx: Context) -> Result<Response> {
@@ -61,49 +64,29 @@ async fn fetch(req: Request, _env: Env, _ctx: Context) -> Result<Response> {
     let path = url.path();
 
     match (req.method(), path.as_ref()) {
-        (Method::Get, "/health") => handle_health(),
-        (Method::Get, "/config") => handle_config(),
+        (Method::Get, "/") => handle_status(),
         _ => Response::error("Not Found", 404),
     }
 }
 
-/// Handle /health endpoint
+/// Handle / (root) endpoint
 ///
-/// Returns a simple health check response with worker status
-fn handle_health() -> Result<Response> {
-    let health_json = format!(
+/// Returns combined health status and configuration in a single response
+fn handle_status() -> Result<Response> {
+    let mut status_json = format!(
         r#"{{
   "status": "healthy",
   "worker": "linkkivahti",
   "version": "{}",
-  "resources_count": {}
-}}"#,
-        config::version(),
-        config::resource_count()
-    );
-
-    let mut response = Response::ok(health_json)?;
-    let headers = response.headers_mut();
-    headers.set("Content-Type", "application/json")?;
-    Ok(response)
-}
-
-/// Handle /config endpoint
-///
-/// Returns the compiled-in configuration (resources to monitor)
-fn handle_config() -> Result<Response> {
-    let mut config_json = format!(
-        r#"{{
-  "version": "{}",
   "resources": ["#,
-        config::version()
+        config::version(),
     );
 
     for (i, resource) in config::resources().iter().enumerate() {
         if i > 0 {
-            config_json.push_str(",");
+            status_json.push_str(",");
         }
-        config_json.push_str(&format!(
+        status_json.push_str(&format!(
             r#"
     {{"url": "{}", "sri": "{}"}}"#,
             escape_json(&resource.url),
@@ -111,13 +94,13 @@ fn handle_config() -> Result<Response> {
         ));
     }
 
-    config_json.push_str(
+    status_json.push_str(
         r#"
   ]
 }"#,
     );
 
-    let mut response = Response::ok(config_json)?;
+    let mut response = Response::ok(status_json)?;
     let headers = response.headers_mut();
     headers.set("Content-Type", "application/json")?;
     Ok(response)

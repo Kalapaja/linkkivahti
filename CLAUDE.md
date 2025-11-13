@@ -341,38 +341,30 @@ async fn scheduled(
 
 ### Endpoints
 
-1. **`GET /health`**: Health check with status summary
-   - Returns 200 OK with JSON status
-   - Shows last check time, total resources, success/failure counts
+1. **`GET /`**: Combined status and configuration endpoint
+   - Returns 200 OK with JSON containing both health status and configuration
+   - Shows worker status, version, resource count, and full list of monitored resources
+   - Useful for monitoring, debugging, and verification
 
-2. **`GET /config`**: Config dump
-   - Returns compiled-in configuration
-   - Shows all monitored URLs and their expected SRI hashes
-   - Useful for debugging and verification
+2. **Other paths**: 404 Not Found
 
-3. **Other paths**: 404 Not Found
+### Example Response
 
-### Example Responses
-
-**Health Check**:
+**Status Endpoint** (at root `/`):
 ```json
 {
   "status": "healthy",
   "worker": "linkkivahti",
-  "version": "0.1.0",
-  "resources_count": 2,
-  "last_check": "2025-11-12T10:00:00Z"
-}
-```
-
-**Config Dump**:
-```json
-{
   "version": "1.0",
+  "resources_count": 2,
   "resources": [
     {
       "url": "https://cdn.example.com/widget.js",
       "sri": "sha384-v5A9W..."
+    },
+    {
+      "url": "https://cdn.example.com/styles.css",
+      "sri": "sha384-abc123..."
     }
   ]
 }
@@ -526,8 +518,8 @@ wrangler deploy --env staging
 # Check worker logs
 wrangler tail
 
-# Test health endpoint
-curl https://linkkivahti.yourname.workers.dev/health
+# Test status endpoint (shows health + config)
+curl https://linkkivahti.yourname.workers.dev/
 
 # Manually trigger cron
 curl "https://linkkivahti.yourname.workers.dev/__scheduled?cron=*+*+*+*+*"

@@ -137,13 +137,12 @@ wrangler tail
 
 Once deployed, your worker exposes:
 
-- **`GET /health`**: Health check with status summary
-- **`GET /config`**: View compiled-in configuration
+- **`GET /`**: Combined status and configuration endpoint
 
 Example:
 
 ```bash
-curl https://linkkivahti.yourname.workers.dev/health
+curl https://linkkivahti.yourname.workers.dev/
 ```
 
 Response:
@@ -153,7 +152,16 @@ Response:
   "status": "healthy",
   "worker": "linkkivahti",
   "version": "1.0",
-  "resources_count": 2
+  "resources": [
+    {
+      "url": "https://cdn.example.com/script.js",
+      "sri": "sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
+    },
+    {
+      "url": "https://cdn.example.com/style.css",
+      "sri": "sha384-..."
+    }
+  ]
 }
 ```
 
@@ -328,9 +336,8 @@ cargo test
 # Start local dev server
 wrangler dev
 
-# Access endpoints
-curl http://localhost:8787/health
-curl http://localhost:8787/config
+# Access status endpoint
+curl http://localhost:8787/
 ```
 
 ### Build Optimization
