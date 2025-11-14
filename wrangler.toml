@@ -8,11 +8,14 @@ command = "cargo install -q worker-build && worker-build --release"
 # Cron trigger - runs every hour at minute 0
 # Adjust the schedule as needed using cron syntax:
 # */15 * * * * = every 15 minutes
-# 0 * * * *    = every hour (current setting)
+# 0 * * * *    = every hour
 # 0 0 * * *    = daily at midnight
 # 0 9 * * 1-5  = weekdays at 9 AM
 [triggers]
 crons = ["0 * * * *"]
+
+[observability]
+enabled = true
 
 # Secrets (set using: wrangler secret put WEBHOOK_URL)
 # WEBHOOK_URL - Webhook URL for failure notifications (Discord, Slack, etc.)

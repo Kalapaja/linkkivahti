@@ -181,68 +181,137 @@ Linkkivahti automatically detects the webhook service type based on the URL and 
 
 **Discord** (`discord.com`, `discordapp.com`)
 - Uses Discord webhook embeds format
-- Rich formatting with colors, fields, and inline elements
+- Rich formatting with severity-based colors, timestamp, and fields
+- Color codes based on error type:
+  - SRI mismatch (security issue): Dark red `#992D22` (10038562)
+  - Server errors (5xx): Red `#ED4245` (15548997)
+  - Client errors (4xx): Orange `#E67E22` (15105570)
+  - Network errors: Red-orange (15158332)
 - Example payload:
   ```json
   {
     "embeds": [{
       "title": "🔗 Link Check Failed",
       "description": "**https://cdn.example.com/widget.js**",
-      "color": 15158332,
+      "color": 10038562,
       "fields": [
-        {"name": "Status", "value": "SRI mismatch", "inline": true},
-        {"name": "Time", "value": "2025-11-12T10:30:00Z", "inline": true}
-      ]
+        {"name": "Status", "value": "SRI mismatch (HTTP 200)", "inline": true}
+      ],
+      "timestamp": "2025-11-12T10:30:00Z"
     }]
   }
   ```
 
 **Slack** (`hooks.slack.com`, `slack.com/api/`)
 - Uses Slack Block Kit format
-- Structured sections with markdown support
+- Includes required `text` field for notification fallback
+- Structured sections with mrkdwn formatting and visual dividers
 - Example payload:
   ```json
   {
+    "text": "Link Check Failed: https://cdn.example.com/widget.js - SRI mismatch (HTTP 200)",
     "blocks": [
       {
         "type": "header",
         "text": {"type": "plain_text", "text": "🔗 Link Check Failed"}
       },
+      {"type": "divider"},
       {
         "type": "section",
         "fields": [
           {"type": "mrkdwn", "text": "*URL:*\nhttps://cdn.example.com/widget.js"},
-          {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch"}
+          {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch (HTTP 200)"}
+        ]
+      },
+      {"type": "divider"},
+      {
+        "type": "context",
+        "elements": [
+          {"type": "mrkdwn", "text": "Time: 2025-11-12T10:30:00Z | Worker: linkkivahti"}
         ]
       }
     ]
   }
   ```
 
-**Zulip** (`zulipchat.com`, `/api/v1/messages`)
-- Sends messages to Zulip streams
-- Markdown-formatted content
-- Default stream: "monitoring", topic: "Link Checks"
-- Example payload:
+**Zulip** (`zulipchat.com`, `/external/slack_incoming`)
+- Uses Zulip's **Slack-compatible webhook** endpoint
+- Accepts standard Slack Block Kit format (same payload as Slack)
+- URL format: `https://yourorg.zulipchat.com/api/v1/external/slack_incoming?api_key=YOUR_KEY&stream=STREAM_NAME`
+- The `channel` field in Slack payload maps to Zulip stream name
+- Example payload: (identical to Slack format above)
   ```json
   {
-    "type": "stream",
-    "to": "monitoring",
-    "topic": "Link Checks",
-    "content": "## 🔗 Link Check Failed\n\n**URL:** https://cdn.example.com/widget.js\n\n**Status:** SRI mismatch\n\n**Time:** 2025-11-12T10:30:00Z"
+    "text": "Link Check Failed: https://cdn.example.com/widget.js - SRI mismatch (HTTP 200)",
+    "blocks": [
+      {
+        "type": "header",
+        "text": {"type": "plain_text", "text": "🔗 Link Check Failed"}
+      },
+      {"type": "divider"},
+      {
+        "type": "section",
+        "fields": [
+          {"type": "mrkdwn", "text": "*URL:*\nhttps://cdn.example.com/widget.js"},
+          {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch (HTTP 200)"}
+        ]
+      },
+      {"type": "divider"},
+      {
+        "type": "context",
+        "elements": [
+          {"type": "mrkdwn", "text": "Time: 2025-11-12T10:30:00Z | Worker: linkkivahti"}
+        ]
+      }
+    ]
   }
   ```
 
 **Generic** (fallback for other services)
-- Simple JSON format
+- Uses **Prometheus Alertmanager v4** webhook format
+- Compatible with Grafana, PagerDuty, Opsgenie, VictorOps, and other observability tools
+- Includes severity labels (critical for SRI mismatches, warning for other failures)
 - Example payload:
   ```json
   {
-    "timestamp": "2025-11-12T10:30:00Z",
-    "status": "failure",
-    "url": "https://cdn.example.com/widget.js",
-    "error": "SRI mismatch: expected sha384-abc..., got sha384-xyz...",
-    "worker": "linkkivahti"
+    "version": "4",
+    "groupKey": "linkkivahti/a1b2c3d4e5f6g7h8",
+    "truncatedAlerts": 0,
+    "status": "firing",
+    "receiver": "webhook",
+    "groupLabels": {
+      "alertname": "LinkCheckFailed"
+    },
+    "commonLabels": {
+      "alertname": "LinkCheckFailed",
+      "severity": "critical",
+      "service": "linkkivahti"
+    },
+    "commonAnnotations": {
+      "summary": "Link availability check failed",
+      "description": "External resource check detected a failure"
+    },
+    "externalURL": "https://linkkivahti.workers.dev",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "LinkCheckFailed",
+          "severity": "critical",
+          "service": "linkkivahti",
+          "instance": "https://cdn.example.com/widget.js",
+          "job": "link-checker"
+        },
+        "annotations": {
+          "summary": "Link check failed for https://cdn.example.com/widget.js",
+          "description": "SRI mismatch (HTTP 200)"
+        },
+        "startsAt": "2025-11-12T10:30:00Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://linkkivahti.workers.dev/",
+        "fingerprint": "a1b2c3d4e5f6g7h8"
+      }
+    ]
   }
   ```
 
@@ -269,8 +338,11 @@ WEBHOOK_URL="https://discord.com/api/webhooks/123456/abcdef"
 # Slack (auto-detected)
 WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx"
 
-# Zulip (auto-detected)
-WEBHOOK_URL="https://yourorg.zulipchat.com/api/v1/messages?api_key=YOUR_KEY"
+# Zulip Slack-compatible webhook (auto-detected)
+WEBHOOK_URL="https://yourorg.zulipchat.com/api/v1/external/slack_incoming?api_key=YOUR_KEY&stream=monitoring"
+
+# Alertmanager-compatible endpoint (auto-detected as generic)
+WEBHOOK_URL="https://alertmanager.example.com/api/v1/alerts"
 
 # Force specific service for custom domains
 WEBHOOK_URL="https://custom.domain/webhook"
@@ -281,12 +353,16 @@ WEBHOOK_SERVICE="slack"
 
 The notification system uses Rust's idiomatic patterns:
 
-- **`WebhookService` enum**: Type-safe representation of supported services
+- **`WebhookService` enum**: Type-safe representation of supported services (Discord, Slack, Zulip, Generic)
 - **`impl FromStr`**: Parse service names from environment variables
 - **`impl Display`**: Human-readable service names in logs
 - **`from_url()` method**: Auto-detection logic based on domain patterns
 - **`build_payload()` method**: Service-specific payload formatting
-- **`headers()` method**: Service-specific HTTP headers (e.g., User-Agent for Zulip)
+  - Discord: Uses `build_discord_payload()` with severity-based colors
+  - Slack/Zulip: Both use `build_slack_payload()` (Zulip is Slack-compatible)
+  - Generic: Uses `build_generic_payload()` with Alertmanager v4 format
+- **`severity_color()` helper**: Maps error types to Discord color codes
+- **`compute_fingerprint()` helper**: Generates stable alert fingerprints for Alertmanager
 
 **Code Reference**: See `src/notify.rs` for the complete implementation.
 

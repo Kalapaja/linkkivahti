@@ -73,17 +73,17 @@ Paste your webhook URL when prompted. Linkkivahti **automatically detects** the 
 **Supported services:**
 
 - **Discord**: `https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_TOKEN`
-  - Auto-detected from domain, uses rich embeds format
+  - Auto-detected from domain, uses rich embeds with severity-based colors
   
 - **Slack**: `https://hooks.slack.com/services/YOUR/WEBHOOK/URL`
-  - Auto-detected from domain, uses Block Kit format
+  - Auto-detected from domain, uses Block Kit format with dividers
   
-- **Zulip**: `https://yourorg.zulipchat.com/api/v1/messages?api_key=YOUR_API_KEY`
-  - Auto-detected from domain or `/api/v1/messages` path
-  - Sends to "monitoring" stream with "Link Checks" topic
+- **Zulip**: `https://yourorg.zulipchat.com/api/v1/external/slack_incoming?api_key=YOUR_KEY&stream=STREAM_NAME`
+  - Auto-detected from domain or `/external/slack_incoming` path
+  - Uses Slack-compatible webhook (same format as Slack Block Kit)
   
 - **Generic**: Any other endpoint accepting JSON POST
-  - Simple JSON format for custom integrations
+  - Uses Prometheus Alertmanager v4 format for observability tool compatibility
 
 **Manual override** (optional):
 
@@ -233,7 +233,7 @@ Linkkivahti automatically formats notifications based on the detected webhook se
 
 ### Discord Format
 
-Rich embeds with color coding:
+Rich embeds with severity-based color coding and native timestamps:
 
 ```json
 {
@@ -241,34 +241,43 @@ Rich embeds with color coding:
     {
       "title": "🔗 Link Check Failed",
       "description": "**https://example.com/file.js**",
-      "color": 15158332,
+      "color": 10038562,
       "fields": [
-        {"name": "Status", "value": "SRI mismatch", "inline": true},
-        {"name": "Time", "value": "2025-11-12T10:30:00Z", "inline": true}
-      ]
+        {"name": "Status", "value": "SRI mismatch (HTTP 200)", "inline": true}
+      ],
+      "timestamp": "2025-11-12T10:30:00Z"
     }
   ]
 }
 ```
 
+**Color codes:**
+- SRI mismatch (security): Dark red `#992D22` (10038562)
+- Server errors (5xx): Red `#ED4245` (15548997)
+- Client errors (4xx): Orange `#E67E22` (15105570)
+- Network errors: Red-orange (15158332)
+
 ### Slack Format
 
-Block Kit with structured sections:
+Block Kit with fallback text and visual dividers (also used by Zulip):
 
 ```json
 {
+  "text": "Link Check Failed: https://example.com/file.js - SRI mismatch (HTTP 200)",
   "blocks": [
     {
       "type": "header",
       "text": {"type": "plain_text", "text": "🔗 Link Check Failed"}
     },
+    {"type": "divider"},
     {
       "type": "section",
       "fields": [
         {"type": "mrkdwn", "text": "*URL:*\nhttps://example.com/file.js"},
-        {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch"}
+        {"type": "mrkdwn", "text": "*Status:*\nSRI mismatch (HTTP 200)"}
       ]
     },
+    {"type": "divider"},
     {
       "type": "context",
       "elements": [
@@ -281,30 +290,58 @@ Block Kit with structured sections:
 
 ### Zulip Format
 
-Stream message with markdown:
+Uses Slack-compatible webhook (identical payload to Slack above). Configure your Zulip webhook URL with stream and topic parameters:
 
-```json
-{
-  "type": "stream",
-  "to": "monitoring",
-  "topic": "Link Checks",
-  "content": "## 🔗 Link Check Failed\n\n**URL:** https://example.com/file.js\n\n**Status:** SRI mismatch\n\n**Time:** 2025-11-12T10:30:00Z"
-}
+```
+https://yourorg.zulipchat.com/api/v1/external/slack_incoming?api_key=YOUR_KEY&stream=monitoring
 ```
 
 ### Generic Format
 
-Simple JSON for custom integrations:
+Prometheus Alertmanager v4 format for observability tools (Grafana, PagerDuty, Opsgenie, etc.):
 
 ```json
 {
-  "timestamp": "2025-11-12T10:30:00Z",
-  "status": "failure",
-  "url": "https://example.com/file.js",
-  "error": "SRI mismatch",
-  "worker": "linkkivahti"
+  "version": "4",
+  "groupKey": "linkkivahti/a1b2c3d4e5f6g7h8",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "webhook",
+  "groupLabels": {"alertname": "LinkCheckFailed"},
+  "commonLabels": {
+    "alertname": "LinkCheckFailed",
+    "severity": "critical",
+    "service": "linkkivahti"
+  },
+  "commonAnnotations": {
+    "summary": "Link availability check failed",
+    "description": "External resource check detected a failure"
+  },
+  "externalURL": "https://linkkivahti.workers.dev",
+  "alerts": [{
+    "status": "firing",
+    "labels": {
+      "alertname": "LinkCheckFailed",
+      "severity": "critical",
+      "service": "linkkivahti",
+      "instance": "https://example.com/file.js",
+      "job": "link-checker"
+    },
+    "annotations": {
+      "summary": "Link check failed for https://example.com/file.js",
+      "description": "SRI mismatch (HTTP 200)"
+    },
+    "startsAt": "2025-11-12T10:30:00Z",
+    "endsAt": "0001-01-01T00:00:00Z",
+    "generatorURL": "https://linkkivahti.workers.dev/",
+    "fingerprint": "a1b2c3d4e5f6g7h8"
+  }]
 }
 ```
+
+**Severity levels:**
+- `critical`: SRI mismatches (security issue)
+- `warning`: Network errors, HTTP errors
 
 ## Development
 

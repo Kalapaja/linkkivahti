@@ -29,6 +29,7 @@ struct DiscordEmbed {
     description: String,
     color: u32,
     fields: Vec<DiscordField>,
+    timestamp: String,
 }
 
 #[derive(Serialize)]
@@ -41,6 +42,7 @@ struct DiscordField {
 // Slack webhook payload structures
 #[derive(Serialize)]
 struct SlackPayload {
+    text: String,
     blocks: Vec<SlackBlock>,
 }
 
@@ -53,6 +55,8 @@ enum SlackBlock {
     Section { fields: Vec<SlackText> },
     #[serde(rename = "context")]
     Context { elements: Vec<SlackText> },
+    #[serde(rename = "divider")]
+    Divider,
 }
 
 #[derive(Serialize)]
@@ -62,24 +66,58 @@ struct SlackText {
     text: String,
 }
 
-// Zulip webhook payload structures
+// Alertmanager v4 webhook payload structures (for generic/observability tools)
 #[derive(Serialize)]
-struct ZulipPayload {
-    #[serde(rename = "type")]
-    message_type: &'static str,
-    to: &'static str,
-    topic: &'static str,
-    content: String,
+struct AlertmanagerPayload {
+    version: &'static str,
+    #[serde(rename = "groupKey")]
+    group_key: String,
+    #[serde(rename = "truncatedAlerts")]
+    truncated_alerts: u32,
+    status: &'static str,
+    receiver: &'static str,
+    #[serde(rename = "groupLabels")]
+    group_labels: AlertmanagerLabels,
+    #[serde(rename = "commonLabels")]
+    common_labels: AlertmanagerLabels,
+    #[serde(rename = "commonAnnotations")]
+    common_annotations: AlertmanagerAnnotations,
+    #[serde(rename = "externalURL")]
+    external_url: &'static str,
+    alerts: Vec<AlertmanagerAlert>,
 }
 
-// Generic webhook payload structures
 #[derive(Serialize)]
-struct GenericPayload {
-    timestamp: String,
+struct AlertmanagerLabels {
+    alertname: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct AlertmanagerAnnotations {
+    summary: String,
+    description: String,
+}
+
+#[derive(Serialize)]
+struct AlertmanagerAlert {
     status: &'static str,
-    url: &'static str,
-    error: String,
-    worker: &'static str,
+    labels: AlertmanagerLabels,
+    annotations: AlertmanagerAnnotations,
+    #[serde(rename = "startsAt")]
+    starts_at: String,
+    #[serde(rename = "endsAt")]
+    ends_at: &'static str,
+    #[serde(rename = "generatorURL")]
+    generator_url: &'static str,
+    fingerprint: String,
 }
 
 impl WebhookService {
@@ -113,9 +151,9 @@ impl WebhookService {
             || contains_ignore_ascii_case(url, "slack.com/api/")
         {
             Self::Slack
-        // Check for Zulip domains (case-sensitive for path part)
+        // Check for Zulip Slack-compatible webhook (uses Slack format)
         } else if contains_ignore_ascii_case(url, "zulipchat.com")
-            || url.contains("/api/v1/messages")
+            || url.contains("/external/slack_incoming")
         {
             Self::Zulip
         } else {
@@ -134,8 +172,7 @@ impl WebhookService {
     fn build_payload(&self, result: &CheckResult, timestamp: &str) -> Result<String> {
         let json = match self {
             Self::Discord => Self::build_discord_payload(result, timestamp)?,
-            Self::Slack => Self::build_slack_payload(result, timestamp)?,
-            Self::Zulip => Self::build_zulip_payload(result, timestamp)?,
+            Self::Slack | Self::Zulip => Self::build_slack_payload(result, timestamp)?,
             Self::Generic => Self::build_generic_payload(result, timestamp)?,
         };
         Ok(json)
@@ -143,23 +180,19 @@ impl WebhookService {
 
     /// Build Discord webhook payload with embeds
     fn build_discord_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+        let color = Self::severity_color(result);
+
         let payload = DiscordPayload {
             embeds: vec![DiscordEmbed {
                 title: "🔗 Link Check Failed",
                 description: format!("**{}**", result.url),
-                color: 15158332, // Red color
-                fields: vec![
-                    DiscordField {
-                        name: "Status",
-                        value: result.description().to_string(),
-                        inline: true,
-                    },
-                    DiscordField {
-                        name: "Time",
-                        value: timestamp.to_string(),
-                        inline: true,
-                    },
-                ],
+                color,
+                fields: vec![DiscordField {
+                    name: "Status",
+                    value: result.description().to_string(),
+                    inline: true,
+                }],
+                timestamp: timestamp.to_string(),
             }],
         };
 
@@ -167,9 +200,34 @@ impl WebhookService {
             .map_err(|e| Error::RustError(format!("Failed to serialize Discord payload: {}", e)))
     }
 
+    /// Get Discord color code based on error severity
+    fn severity_color(result: &CheckResult) -> u32 {
+        use crate::checker::CheckError;
+
+        // SRI mismatch is a security issue - dark red
+        if result.sri_valid == Some(false) {
+            return 10038562; // Dark red #992D22
+        }
+
+        // Color based on error type
+        match result.error {
+            Some(CheckError::HttpError(code)) if code >= 500 => 15548997, // Server error - red #ED4245
+            Some(CheckError::HttpError(_)) => 15105570, // Client error - orange #E67E22
+            Some(CheckError::FetchFailed) => 15158332,  // Network error - red-orange
+            _ => 15548997,                              // Default - red #ED4245
+        }
+    }
+
     /// Build Slack webhook payload with Block Kit
     fn build_slack_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+        let fallback_text = format!(
+            "Link Check Failed: {} - {}",
+            result.url,
+            result.description()
+        );
+
         let payload = SlackPayload {
+            text: fallback_text,
             blocks: vec![
                 SlackBlock::Header {
                     text: SlackText {
@@ -177,6 +235,7 @@ impl WebhookService {
                         text: "🔗 Link Check Failed".to_string(),
                     },
                 },
+                SlackBlock::Divider,
                 SlackBlock::Section {
                     fields: vec![
                         SlackText {
@@ -189,6 +248,7 @@ impl WebhookService {
                         },
                     ],
                 },
+                SlackBlock::Divider,
                 SlackBlock::Context {
                     elements: vec![SlackText {
                         text_type: "mrkdwn",
@@ -202,48 +262,77 @@ impl WebhookService {
             .map_err(|e| Error::RustError(format!("Failed to serialize Slack payload: {}", e)))
     }
 
-    /// Build Zulip webhook payload with markdown content
-    fn build_zulip_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
-        let content = format!(
-            "## 🔗 Link Check Failed\n\n**URL:** {}\n\n**Status:** {}\n\n**Time:** {}",
-            result.url,
-            result.description(),
-            timestamp
-        );
-
-        let payload = ZulipPayload {
-            message_type: "stream",
-            to: "monitoring",
-            topic: "Link Checks",
-            content,
-        };
-
-        serde_json::to_string(&payload)
-            .map_err(|e| Error::RustError(format!("Failed to serialize Zulip payload: {}", e)))
-    }
-
-    /// Build generic JSON webhook payload
+    /// Build Alertmanager v4 webhook payload for observability tools
     fn build_generic_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
-        let payload = GenericPayload {
-            timestamp: timestamp.to_string(),
-            status: "failure",
-            url: result.url,
-            error: result.description().to_string(),
-            worker: "linkkivahti",
+        let severity = if result.sri_valid == Some(false) {
+            "critical" // SRI mismatch is a security issue
+        } else {
+            "warning" // Other failures are warnings
         };
 
-        serde_json::to_string(&payload)
-            .map_err(|e| Error::RustError(format!("Failed to serialize generic payload: {}", e)))
+        let summary = format!("Link check failed for {}", result.url);
+        let description = result.description();
+        let fingerprint = Self::compute_fingerprint(result.url);
+        let group_key = format!("linkkivahti/{}", fingerprint);
+
+        let payload = AlertmanagerPayload {
+            version: "4",
+            group_key,
+            truncated_alerts: 0,
+            status: "firing",
+            receiver: "webhook",
+            group_labels: AlertmanagerLabels {
+                alertname: "LinkCheckFailed",
+                severity: None,
+                service: None,
+                instance: None,
+                job: None,
+            },
+            common_labels: AlertmanagerLabels {
+                alertname: "LinkCheckFailed",
+                severity: Some(severity),
+                service: Some("linkkivahti"),
+                instance: None,
+                job: None,
+            },
+            common_annotations: AlertmanagerAnnotations {
+                summary: "Link availability check failed".to_string(),
+                description: "External resource check detected a failure".to_string(),
+            },
+            external_url: "https://linkkivahti.workers.dev",
+            alerts: vec![AlertmanagerAlert {
+                status: "firing",
+                labels: AlertmanagerLabels {
+                    alertname: "LinkCheckFailed",
+                    severity: Some(severity),
+                    service: Some("linkkivahti"),
+                    instance: Some(result.url.to_string()),
+                    job: Some("link-checker"),
+                },
+                annotations: AlertmanagerAnnotations {
+                    summary,
+                    description,
+                },
+                starts_at: timestamp.to_string(),
+                ends_at: "0001-01-01T00:00:00Z", // Zero value indicates ongoing
+                generator_url: "https://linkkivahti.workers.dev/",
+                fingerprint,
+            }],
+        };
+
+        serde_json::to_string(&payload).map_err(|e| {
+            Error::RustError(format!("Failed to serialize Alertmanager payload: {}", e))
+        })
     }
 
-    /// Get service-specific HTTP headers
-    ///
-    /// Returns a list of (header_name, header_value) tuples
-    fn headers(&self) -> Vec<(&'static str, &'static str)> {
-        match self {
-            Self::Zulip => vec![("User-Agent", "linkkivahti/0.1.0")],
-            _ => vec![],
+    /// Compute a fingerprint hash for an alert based on the URL
+    fn compute_fingerprint(url: &str) -> String {
+        // Simple hash computation - use first 16 chars of hex representation
+        let mut hash: u64 = 0;
+        for byte in url.as_bytes() {
+            hash = hash.wrapping_mul(31).wrapping_add(*byte as u64);
         }
+        format!("{:016x}", hash)
     }
 }
 
@@ -351,26 +440,21 @@ fn detect_webhook_service(env: &Env, webhook_url: &str) -> WebhookService {
 
 /// Send a webhook notification via HTTP POST
 ///
-/// Sends a formatted payload to the webhook endpoint with appropriate headers
-/// for the service type. Logs detailed error information if the request fails.
+/// Sends a formatted payload to the webhook endpoint. Logs detailed error
+/// information if the request fails.
 ///
 /// # Arguments
 /// * `webhook_url` - The webhook endpoint URL
 /// * `payload` - JSON payload to send
-/// * `service` - Webhook service type (for service-specific headers)
+/// * `service` - Webhook service type (for logging)
 ///
 /// # Returns
 /// * `Ok(())` if sent successfully (HTTP 2xx status)
 /// * `Err` if request failed or returned non-2xx status
-async fn send_webhook(webhook_url: &str, payload: &str, service: WebhookService) -> Result<()> {
+async fn send_webhook(webhook_url: &str, payload: &str, _service: WebhookService) -> Result<()> {
     // Build headers
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
-
-    // Add service-specific headers
-    for (header_name, header_value) in service.headers() {
-        headers.set(header_name, header_value)?;
-    }
 
     // Build request
     let mut init = RequestInit::new();
@@ -443,11 +527,13 @@ mod tests {
     #[test]
     fn test_webhook_service_from_url_zulip() {
         assert_eq!(
-            WebhookService::from_url("https://example.zulipchat.com/api/v1/messages"),
+            WebhookService::from_url(
+                "https://example.zulipchat.com/api/v1/external/slack_incoming"
+            ),
             WebhookService::Zulip
         );
         assert_eq!(
-            WebhookService::from_url("https://chat.company.com/api/v1/messages"),
+            WebhookService::from_url("https://chat.company.com/api/v1/external/slack_incoming"),
             WebhookService::Zulip
         );
     }
@@ -509,6 +595,38 @@ mod tests {
         assert!(payload.contains("Fetch failed"));
         assert!(payload.contains("embeds"));
         assert!(payload.contains("🔗 Link Check Failed"));
+        assert!(payload.contains("timestamp")); // New: timestamp field
+        assert!(payload.contains("2025-11-12T10:00:00Z"));
+        // Color should be 15158332 for network errors
+        assert!(payload.contains("15158332"));
+    }
+
+    #[test]
+    fn test_severity_color() {
+        use crate::checker::CheckError;
+
+        // SRI mismatch should be dark red
+        let sri_fail = CheckResult::success("https://example.com/test.js", 200, false);
+        let color = WebhookService::severity_color(&sri_fail);
+        assert_eq!(color, 10038562);
+
+        // Server error should be red
+        let server_error =
+            CheckResult::failure("https://example.com/test.js", CheckError::HttpError(500));
+        let color = WebhookService::severity_color(&server_error);
+        assert_eq!(color, 15548997);
+
+        // Client error should be orange
+        let client_error =
+            CheckResult::failure("https://example.com/test.js", CheckError::HttpError(404));
+        let color = WebhookService::severity_color(&client_error);
+        assert_eq!(color, 15105570);
+
+        // Network error should be red-orange
+        let network_error =
+            CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
+        let color = WebhookService::severity_color(&network_error);
+        assert_eq!(color, 15158332);
     }
 
     #[test]
@@ -528,6 +646,10 @@ mod tests {
         assert!(payload.contains("Failed to read response body"));
         assert!(payload.contains("blocks"));
         assert!(payload.contains("mrkdwn"));
+        // New: required text field for fallback
+        assert!(payload.contains(r#""text":"Link Check Failed:"#));
+        // New: divider blocks
+        assert!(payload.contains(r#""type":"divider""#));
     }
 
     #[test]
@@ -542,13 +664,13 @@ mod tests {
             .build_payload(&result, timestamp)
             .unwrap();
 
-        // Verify Zulip-specific format
+        // Verify Zulip uses Slack format (Slack-compatible webhook)
         assert!(payload.contains("https://example.com/test.js"));
         assert!(payload.contains("HTTP error: 404"));
-        assert!(payload.contains(r#""type":"stream""#));
-        assert!(payload.contains(r#""to":"monitoring""#));
-        assert!(payload.contains(r#""topic":"Link Checks""#));
-        assert!(payload.contains("## 🔗 Link Check Failed"));
+        assert!(payload.contains("blocks"));
+        assert!(payload.contains("mrkdwn"));
+        assert!(payload.contains(r#""text":"Link Check Failed:"#));
+        assert!(payload.contains(r#""type":"divider""#));
     }
 
     #[test]
@@ -562,10 +684,53 @@ mod tests {
             .build_payload(&result, timestamp)
             .unwrap();
 
-        // Verify generic format
+        // Verify Alertmanager v4 format
+        assert!(payload.contains(r#""version":"4""#));
+        assert!(payload.contains(r#""status":"firing""#));
         assert!(payload.contains("https://example.com/test.js"));
         assert!(payload.contains("Fetch failed"));
-        assert!(payload.contains(r#""status":"failure""#));
-        assert!(payload.contains(r#""worker":"linkkivahti""#));
+        assert!(payload.contains(r#""alertname":"LinkCheckFailed""#));
+        assert!(payload.contains(r#""severity":"warning""#)); // Network errors are warnings
+        assert!(payload.contains(r#""service":"linkkivahti""#));
+        assert!(payload.contains(r#""job":"link-checker""#));
+        assert!(payload.contains("alerts"));
+        assert!(payload.contains("fingerprint"));
+        assert!(payload.contains(r#""startsAt":"2025-11-12T10:00:00Z""#));
+    }
+
+    #[test]
+    fn test_alertmanager_severity() {
+        use crate::checker::CheckError;
+
+        // SRI mismatch should be critical
+        let sri_fail = CheckResult::success("https://example.com/test.js", 200, false);
+        let payload = WebhookService::Generic
+            .build_payload(&sri_fail, "2025-11-12T10:00:00Z")
+            .unwrap();
+        assert!(payload.contains(r#""severity":"critical""#));
+
+        // Other errors should be warning
+        let network_error =
+            CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
+        let payload = WebhookService::Generic
+            .build_payload(&network_error, "2025-11-12T10:00:00Z")
+            .unwrap();
+        assert!(payload.contains(r#""severity":"warning""#));
+    }
+
+    #[test]
+    fn test_compute_fingerprint() {
+        // Same URL should produce same fingerprint
+        let fp1 = WebhookService::compute_fingerprint("https://example.com/test.js");
+        let fp2 = WebhookService::compute_fingerprint("https://example.com/test.js");
+        assert_eq!(fp1, fp2);
+
+        // Different URLs should produce different fingerprints
+        let fp3 = WebhookService::compute_fingerprint("https://example.com/other.js");
+        assert_ne!(fp1, fp3);
+
+        // Fingerprint should be 16 hex chars
+        assert_eq!(fp1.len(), 16);
+        assert!(fp1.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
