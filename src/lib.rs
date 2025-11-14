@@ -29,16 +29,6 @@ struct ResourceInfo {
     sri: &'static str,
 }
 
-/// Access token used for securing non-public endpoints
-/// This is a default token set at build time; it can be overridden via the ACCESS_TOKEN
-/// environment variable at runtime.
-const BUILT_IN_ACCESS_TOKEN: &str = env!("ACCESS_TOKEN");
-
-/// Retrieve the access token from environment or use built-in default
-fn get_access_token() -> String {
-    std::env::var("ACCESS_TOKEN").unwrap_or_else(|_| BUILT_IN_ACCESS_TOKEN.to_string())
-}
-
 pub async fn check_all_resources(env: &Env) {
     console_log!(
         "🔍 Starting link checks for {} resources",
@@ -94,18 +84,21 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 /// * `req` - The incoming HTTP request
 /// # Returns
 /// Ok(()) if authorized, Err otherwise
-fn check_auth(req: &Request) -> Result<()> {
-    let access_token = get_access_token();
-    let auth_header = req
-        .headers()
-        .get("Authorization")?
-        .ok_or_else(|| Error::RustError("Missing Authorization header".to_string()))?;
+fn check_auth(env: &Env, req: &Request) -> Result<()> {
+    if let Ok(access_token) = env.secret("ACCESS_TOKEN") {
+        let auth_header = req
+            .headers()
+            .get("Authorization")?
+            .ok_or_else(|| Error::RustError("Missing Authorization header".to_string()))?;
 
-    if auth_header != format!("Bearer {}", access_token) {
-        return Err(Error::RustError("Unauthorized".to_string()));
+        if auth_header != format!("Bearer {}", access_token) {
+            return Err(Error::RustError("Unauthorized".to_string()));
+        }
+
+        Ok(())
+    } else {
+        Err(Error::RustError("ACCESS_TOKEN not configured".to_string()))
     }
-
-    Ok(())
 }
 
 /// HTTP fetch event handler
@@ -123,12 +116,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     match (req.method(), path.as_ref()) {
         (Method::Get, "/") => handle_status(),
         (Method::Post, "/check") => {
-            check_auth(&req)?;
+            check_auth(&env, &req)?;
             check_all_resources(&env).await;
             Response::from_html("Link check triggered")
         }
         (Method::Post, "/notify") => {
-            check_auth(&req)?;
+            check_auth(&env, &req)?;
             notify::send_test_notification(&env).await?;
             Response::from_html("Test notification sent")
         }

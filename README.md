@@ -232,7 +232,7 @@ Set via `wrangler secret put`:
 
 - `ACCESS_TOKEN`: Shared secret required by secured endpoints (`POST /check`, `POST /notify`)
   - Set a strong value so you can rotate credentials without rebuilding the worker
-  - Defaults to the compile-time token when unset, but defining the secret in production is recommended
+  - Auth on the protected endpoints fails if not set
 
 - `WEBHOOK_URL`: Webhook endpoint for failure notifications (optional)
   - Supports Discord, Slack, Zulip, and generic webhooks

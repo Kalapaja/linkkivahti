@@ -357,7 +357,7 @@ Secured POST routes expect an `Authorization: Bearer <ACCESS_TOKEN>` header. Con
 wrangler secret put ACCESS_TOKEN
 ```
 
-If the variable is not provided, Linkkivahti falls back to the compile-time token embedded during build. Defining the secret in production is strongly recommended so the credential can be rotated without recompiling the worker.
+If the variable is not provided, Linkkivahti would reject requests to secured endpoints.
 
 #### Implementation Details
 
