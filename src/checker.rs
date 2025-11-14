@@ -1,6 +1,7 @@
 //! Link availability and SRI verification module
 
 use crate::sri::SriHash;
+use std::borrow::Cow;
 use worker::*;
 
 /// Typed error for check failures
@@ -29,14 +30,22 @@ impl CheckError {
     }
 }
 
+/// Identify the context in which a check result was produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckResultKind {
+    Real,
+    Test,
+}
+
 /// Result of a link check operation
 #[derive(Debug, Clone)]
 pub struct CheckResult {
-    pub url: &'static str,
+    pub url: Cow<'static, str>,
     pub success: bool,
     pub status_code: Option<u16>,
     pub error: Option<CheckError>,
     pub sri_valid: Option<bool>,
+    pub kind: CheckResultKind,
 }
 
 impl CheckResult {
@@ -44,11 +53,12 @@ impl CheckResult {
     #[inline]
     pub fn success(url: &'static str, status_code: u16, sri_valid: bool) -> Self {
         Self {
-            url,
+            url: Cow::Borrowed(url),
             success: true,
             status_code: Some(status_code),
             error: None,
             sri_valid: Some(sri_valid),
+            kind: CheckResultKind::Real,
         }
     }
 
@@ -56,22 +66,43 @@ impl CheckResult {
     #[inline]
     pub fn failure(url: &'static str, error: CheckError) -> Self {
         Self {
-            url,
+            url: Cow::Borrowed(url),
             success: false,
             status_code: None,
             error: Some(error),
             sri_valid: None,
+            kind: CheckResultKind::Real,
+        }
+    }
+
+    /// Create a test check result used for synthetic notifications
+    #[inline]
+    pub fn test(message: impl Into<String>) -> Self {
+        Self {
+            url: Cow::Owned(message.into()),
+            success: true,
+            status_code: None,
+            error: None,
+            sri_valid: None,
+            kind: CheckResultKind::Test,
         }
     }
 
     /// Check if this result indicates a problem (failure or SRI mismatch)
     #[inline]
     pub fn has_problem(&self) -> bool {
+        if self.kind == CheckResultKind::Test {
+            return false;
+        }
         !self.success || self.sri_valid == Some(false)
     }
 
     /// Get a human-readable description of the result
     pub fn description(&self) -> String {
+        if self.kind == CheckResultKind::Test {
+            return "TEST notification".to_string();
+        }
+
         if !self.success {
             if let Some(error) = &self.error {
                 format!("Failed: {}", error.description())
@@ -184,6 +215,9 @@ mod tests {
 
         let failure = CheckResult::failure("https://example.com", CheckError::FetchFailed);
         assert!(failure.has_problem());
+
+        let test_result = CheckResult::test("Synthetic notification");
+        assert!(!test_result.has_problem());
     }
 
     #[test]
@@ -199,5 +233,8 @@ mod tests {
 
         let http_error = CheckResult::failure("https://example.com", CheckError::HttpError(404));
         assert_eq!(http_error.description(), "Failed: HTTP error: 404");
+
+        let test_result = CheckResult::test("Synthetic notification");
+        assert_eq!(test_result.description(), "TEST notification");
     }
 }

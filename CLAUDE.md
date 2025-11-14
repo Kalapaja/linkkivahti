@@ -349,6 +349,16 @@ WEBHOOK_URL="https://custom.domain/webhook"
 WEBHOOK_SERVICE="slack"
 ```
 
+#### Access Token Configuration
+
+Secured POST routes expect an `Authorization: Bearer <ACCESS_TOKEN>` header. Configure a secret at deploy time:
+
+```bash
+wrangler secret put ACCESS_TOKEN
+```
+
+If the variable is not provided, Linkkivahti falls back to the compile-time token embedded during build. Defining the secret in production is strongly recommended so the credential can be rotated without recompiling the worker.
+
 #### Implementation Details
 
 The notification system uses Rust's idiomatic patterns:
@@ -422,7 +432,15 @@ async fn scheduled(
    - Shows worker status, version, resource count, and full list of monitored resources
    - Useful for monitoring, debugging, and verification
 
-2. **Other paths**: 404 Not Found
+2. **`POST /check`**: Trigger immediate link check (secured endpoint)
+   - Requires `Authorization: Bearer <ACCESS_TOKEN>`
+   - Performs the full resource sweep on demand without waiting for the cron schedule
+
+3. **`POST /notify`**: Send webhook self-test (secured endpoint)
+   - Requires `Authorization: Bearer <ACCESS_TOKEN>`
+   - Issues a synthetic failure payload through the configured webhook to validate alert delivery
+
+4. **Other paths**: 404 Not Found
 
 ### Example Response
 

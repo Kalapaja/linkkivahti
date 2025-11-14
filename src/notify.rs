@@ -1,6 +1,6 @@
 //! Notification module for sending alerts about check failures
 
-use crate::checker::CheckResult;
+use crate::checker::{CheckResult, CheckResultKind};
 use serde::Serialize;
 use worker::*;
 
@@ -15,6 +15,13 @@ pub enum WebhookService {
     Zulip,
     /// Generic JSON webhook (fallback)
     Generic,
+}
+
+#[derive(Clone, Copy)]
+struct NotificationContext {
+    title: &'static str,
+    fallback_prefix: &'static str,
+    subject_label: &'static str,
 }
 
 // Discord webhook payload structures
@@ -169,23 +176,32 @@ impl WebhookService {
     ///
     /// # Returns
     /// JSON payload string appropriate for the service
-    fn build_payload(&self, result: &CheckResult, timestamp: &str) -> Result<String> {
+    fn build_payload(
+        &self,
+        result: &CheckResult,
+        timestamp: &str,
+        context: &NotificationContext,
+    ) -> Result<String> {
         let json = match self {
-            Self::Discord => Self::build_discord_payload(result, timestamp)?,
-            Self::Slack | Self::Zulip => Self::build_slack_payload(result, timestamp)?,
-            Self::Generic => Self::build_generic_payload(result, timestamp)?,
+            Self::Discord => Self::build_discord_payload(result, timestamp, context)?,
+            Self::Slack | Self::Zulip => Self::build_slack_payload(result, timestamp, context)?,
+            Self::Generic => Self::build_generic_payload(result, timestamp, context)?,
         };
         Ok(json)
     }
 
     /// Build Discord webhook payload with embeds
-    fn build_discord_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+    fn build_discord_payload(
+        result: &CheckResult,
+        timestamp: &str,
+        context: &NotificationContext,
+    ) -> Result<String> {
         let color = Self::severity_color(result);
 
         let payload = DiscordPayload {
             embeds: vec![DiscordEmbed {
-                title: "🔗 Link Check Failed",
-                description: format!("**{}**", result.url),
+                title: context.title,
+                description: format!("**{}**", result.url.as_ref()),
                 color,
                 fields: vec![DiscordField {
                     name: "Status",
@@ -204,6 +220,10 @@ impl WebhookService {
     fn severity_color(result: &CheckResult) -> u32 {
         use crate::checker::CheckError;
 
+        if result.kind == CheckResultKind::Test {
+            return 3447003; // Info blue
+        }
+
         // SRI mismatch is a security issue - dark red
         if result.sri_valid == Some(false) {
             return 10038562; // Dark red #992D22
@@ -219,10 +239,15 @@ impl WebhookService {
     }
 
     /// Build Slack webhook payload with Block Kit
-    fn build_slack_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
+    fn build_slack_payload(
+        result: &CheckResult,
+        timestamp: &str,
+        context: &NotificationContext,
+    ) -> Result<String> {
         let fallback_text = format!(
-            "Link Check Failed: {} - {}",
-            result.url,
+            "{}: {} - {}",
+            context.fallback_prefix,
+            result.url.as_ref(),
             result.description()
         );
 
@@ -232,7 +257,7 @@ impl WebhookService {
                 SlackBlock::Header {
                     text: SlackText {
                         text_type: "plain_text",
-                        text: "🔗 Link Check Failed".to_string(),
+                        text: context.title.to_string(),
                     },
                 },
                 SlackBlock::Divider,
@@ -240,7 +265,7 @@ impl WebhookService {
                     fields: vec![
                         SlackText {
                             text_type: "mrkdwn",
-                            text: format!("*URL:*\n{}", result.url),
+                            text: format!("*{}:*\n{}", context.subject_label, result.url.as_ref()),
                         },
                         SlackText {
                             text_type: "mrkdwn",
@@ -263,17 +288,38 @@ impl WebhookService {
     }
 
     /// Build Alertmanager v4 webhook payload for observability tools
-    fn build_generic_payload(result: &CheckResult, timestamp: &str) -> Result<String> {
-        let severity = if result.sri_valid == Some(false) {
+    fn build_generic_payload(
+        result: &CheckResult,
+        timestamp: &str,
+        context: &NotificationContext,
+    ) -> Result<String> {
+        let severity = if result.kind == CheckResultKind::Test {
+            "info"
+        } else if result.sri_valid == Some(false) {
             "critical" // SRI mismatch is a security issue
         } else {
             "warning" // Other failures are warnings
         };
 
-        let summary = format!("Link check failed for {}", result.url);
+        let summary = if result.kind == CheckResultKind::Test {
+            format!("{}: {}", context.fallback_prefix, result.url.as_ref())
+        } else {
+            format!("Link check failed for {}", result.url.as_ref())
+        };
         let description = result.description();
-        let fingerprint = Self::compute_fingerprint(result.url);
+        let fingerprint = Self::compute_fingerprint(result.url.as_ref());
         let group_key = format!("linkkivahti/{}", fingerprint);
+
+        let (common_summary, common_description) = match result.kind {
+            CheckResultKind::Test => (
+                "Synthetic notification dispatch".to_string(),
+                "Test notification generated by linkkivahti".to_string(),
+            ),
+            CheckResultKind::Real => (
+                "Link availability check failed".to_string(),
+                "External resource check detected a failure".to_string(),
+            ),
+        };
 
         let payload = AlertmanagerPayload {
             version: "4",
@@ -296,8 +342,8 @@ impl WebhookService {
                 job: None,
             },
             common_annotations: AlertmanagerAnnotations {
-                summary: "Link availability check failed".to_string(),
-                description: "External resource check detected a failure".to_string(),
+                summary: common_summary,
+                description: common_description,
             },
             external_url: "https://linkkivahti.workers.dev",
             alerts: vec![AlertmanagerAlert {
@@ -306,7 +352,7 @@ impl WebhookService {
                     alertname: "LinkCheckFailed",
                     severity: Some(severity),
                     service: Some("linkkivahti"),
-                    instance: Some(result.url.to_string()),
+                    instance: Some(result.url.as_ref().to_string()),
                     job: Some("link-checker"),
                 },
                 annotations: AlertmanagerAnnotations {
@@ -361,6 +407,23 @@ impl std::str::FromStr for WebhookService {
     }
 }
 
+pub async fn send_test_notification(env: &Env) -> Result<()> {
+    let timestamp = get_timestamp();
+    let message = format!("Synthetic test notification at {}", timestamp);
+    let test_result = CheckResult::test(message);
+
+    send_notification(
+        env,
+        &test_result,
+        NotificationContext {
+            title: "🔔 Test Notification",
+            fallback_prefix: "Test Notification",
+            subject_label: "Message",
+        },
+    )
+    .await
+}
+
 /// Send a notification about a failed check to the configured webhook
 ///
 /// This function retrieves the webhook configuration from environment variables,
@@ -375,7 +438,34 @@ impl std::str::FromStr for WebhookService {
 /// * `Ok(())` if notification was sent successfully or webhook is not configured
 /// * `Err` if webhook is configured but sending failed
 pub async fn send_failure_notification(env: &Env, result: &CheckResult) -> Result<()> {
-    // Get webhook URL from environment variable/secret
+    send_notification(
+        env,
+        result,
+        NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        },
+    )
+    .await
+}
+
+/// Send a notification about a check result to the configured webhook
+/// This is a generic function used by both test and failure notifications.
+/// # Arguments
+/// * `env` - Worker environment to access WEBHOOK_URL secret and optional WEBHOOK_SERVICE override
+/// * `result` - The check result to report
+/// * `context` - Notification context with titles and labels
+/// # Returns
+/// * `Ok(())` if notification was sent successfully or webhook is not configured
+/// * `Err` if webhook is configured but sending failed
+async fn send_notification(
+    env: &Env,
+    result: &CheckResult,
+    context: NotificationContext,
+) -> Result<()> {
+    let timestamp = get_timestamp();
+    let result: &CheckResult = result;
     let webhook_url = match env.secret("WEBHOOK_URL") {
         Ok(secret) => secret.to_string(),
         Err(_) => {
@@ -383,24 +473,17 @@ pub async fn send_failure_notification(env: &Env, result: &CheckResult) -> Resul
             return Ok(());
         }
     };
-
     if webhook_url.is_empty() {
         console_log!("WEBHOOK_URL is empty, skipping notification");
         return Ok(());
     }
-
-    // Detect webhook service type (with optional override)
     let service = detect_webhook_service(env, &webhook_url);
     console_log!(
         "Sending webhook notification for: {} via {}",
-        result.url,
+        result.url.as_ref(),
         service
     );
-
-    // Build and send notification
-    let timestamp = get_timestamp();
-    let payload = service.build_payload(result, &timestamp)?;
-
+    let payload = service.build_payload(result, &timestamp, &context)?;
     send_webhook(&webhook_url, &payload, service).await
 }
 
@@ -586,8 +669,14 @@ mod tests {
         let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
+        let context = NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        };
+
         let payload = WebhookService::Discord
-            .build_payload(&result, timestamp)
+            .build_payload(&result, timestamp, &context)
             .unwrap();
 
         // Verify Discord-specific format
@@ -627,6 +716,10 @@ mod tests {
             CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let color = WebhookService::severity_color(&network_error);
         assert_eq!(color, 15158332);
+
+        let test_notification = CheckResult::test("Synthetic notification");
+        let color = WebhookService::severity_color(&test_notification);
+        assert_eq!(color, 3447003);
     }
 
     #[test]
@@ -637,8 +730,14 @@ mod tests {
             CheckResult::failure("https://example.com/test.js", CheckError::BodyReadFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
+        let context = NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        };
+
         let payload = WebhookService::Slack
-            .build_payload(&result, timestamp)
+            .build_payload(&result, timestamp, &context)
             .unwrap();
 
         // Verify Slack-specific format
@@ -660,8 +759,14 @@ mod tests {
             CheckResult::failure("https://example.com/test.js", CheckError::HttpError(404));
         let timestamp = "2025-11-12T10:00:00Z";
 
+        let context = NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        };
+
         let payload = WebhookService::Zulip
-            .build_payload(&result, timestamp)
+            .build_payload(&result, timestamp, &context)
             .unwrap();
 
         // Verify Zulip uses Slack format (Slack-compatible webhook)
@@ -680,8 +785,14 @@ mod tests {
         let result = CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let timestamp = "2025-11-12T10:00:00Z";
 
+        let context = NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        };
+
         let payload = WebhookService::Generic
-            .build_payload(&result, timestamp)
+            .build_payload(&result, timestamp, &context)
             .unwrap();
 
         // Verify Alertmanager v4 format
@@ -704,8 +815,14 @@ mod tests {
 
         // SRI mismatch should be critical
         let sri_fail = CheckResult::success("https://example.com/test.js", 200, false);
+        let context = NotificationContext {
+            title: "🔗 Link Check Failed",
+            fallback_prefix: "Link Check Failed",
+            subject_label: "URL",
+        };
+
         let payload = WebhookService::Generic
-            .build_payload(&sri_fail, "2025-11-12T10:00:00Z")
+            .build_payload(&sri_fail, "2025-11-12T10:00:00Z", &context)
             .unwrap();
         assert!(payload.contains(r#""severity":"critical""#));
 
@@ -713,7 +830,7 @@ mod tests {
         let network_error =
             CheckResult::failure("https://example.com/test.js", CheckError::FetchFailed);
         let payload = WebhookService::Generic
-            .build_payload(&network_error, "2025-11-12T10:00:00Z")
+            .build_payload(&network_error, "2025-11-12T10:00:00Z", &context)
             .unwrap();
         assert!(payload.contains(r#""severity":"warning""#));
     }

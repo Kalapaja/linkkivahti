@@ -138,11 +138,22 @@ wrangler tail
 Once deployed, your worker exposes:
 
 - **`GET /`**: Combined status and configuration endpoint
+- **`POST /check`**: Trigger an immediate link check (requires `Authorization: Bearer <ACCESS_TOKEN>`)
+- **`POST /notify`**: Send a test notification through the configured webhook (requires `Authorization: Bearer <ACCESS_TOKEN>`)
 
 Example:
 
 ```bash
+# Fetch current status (no auth required)
 curl https://linkkivahti.yourname.workers.dev/
+
+# Trigger an on-demand check (requires bearer token)
+curl -X POST https://linkkivahti.yourname.workers.dev/check \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# Send a test notification (requires bearer token)
+curl -X POST https://linkkivahti.yourname.workers.dev/notify \
+  -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 Response:
@@ -218,6 +229,10 @@ crons = ["0 * * * *"]  # Adjust schedule here
 ### Secrets
 
 Set via `wrangler secret put`:
+
+- `ACCESS_TOKEN`: Shared secret required by secured endpoints (`POST /check`, `POST /notify`)
+  - Set a strong value so you can rotate credentials without rebuilding the worker
+  - Defaults to the compile-time token when unset, but defining the secret in production is recommended
 
 - `WEBHOOK_URL`: Webhook endpoint for failure notifications (optional)
   - Supports Discord, Slack, Zulip, and generic webhooks

@@ -29,11 +29,17 @@ struct ResourceInfo {
     sri: &'static str,
 }
 
-/// Scheduled event handler - triggered by cron
-///
-/// This checks all configured resources and sends notifications for any failures.
-#[event(scheduled)]
-async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+/// Access token used for securing non-public endpoints
+/// This is a default token set at build time; it can be overridden via the ACCESS_TOKEN
+/// environment variable at runtime.
+const BUILT_IN_ACCESS_TOKEN: &str = env!("ACCESS_TOKEN");
+
+/// Retrieve the access token from environment or use built-in default
+fn get_access_token() -> String {
+    std::env::var("ACCESS_TOKEN").unwrap_or_else(|_| BUILT_IN_ACCESS_TOKEN.to_string())
+}
+
+pub async fn check_all_resources(env: &Env) {
     console_log!(
         "🔍 Starting link checks for {} resources",
         config::resource_count()
@@ -55,7 +61,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
                 result.url,
                 result.description()
             );
-            if let Err(e) = notify::send_failure_notification(&env, result).await {
+            if let Err(e) = notify::send_failure_notification(env, result).await {
                 console_error!("Failed to send notification: {}", e);
             }
         }
@@ -73,18 +79,59 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     );
 }
 
+/// Scheduled event handler - triggered by cron
+///
+/// This checks all configured resources and sends notifications for any failures.
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    check_all_resources(&env).await;
+}
+
+/// Check Authorization header for secured endpoints to match the access token
+/// (as configured by the ACCESS_TOKEN environment variable, with a random built-in fallback).
+/// Returns an error if the token is missing or invalid.
+/// # Arguments
+/// * `req` - The incoming HTTP request
+/// # Returns
+/// Ok(()) if authorized, Err otherwise
+fn check_auth(req: &Request) -> Result<()> {
+    let access_token = get_access_token();
+    let auth_header = req
+        .headers()
+        .get("Authorization")?
+        .ok_or_else(|| Error::RustError("Missing Authorization header".to_string()))?;
+
+    if auth_header != format!("Bearer {}", access_token) {
+        return Err(Error::RustError("Unauthorized".to_string()));
+    }
+
+    Ok(())
+}
+
 /// HTTP fetch event handler
 ///
 /// Provides:
 /// - GET / - Combined health and configuration endpoint
+/// - POST /check - Trigger immediate link check (secured with access token)
+/// - POST /notify - Test notification webhook (secured with access token)
 /// - Other paths return 404
 #[event(fetch)]
-async fn fetch(req: Request, _env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let path = url.path();
 
     match (req.method(), path.as_ref()) {
         (Method::Get, "/") => handle_status(),
+        (Method::Post, "/check") => {
+            check_auth(&req)?;
+            check_all_resources(&env).await;
+            Response::from_html("Link check triggered")
+        }
+        (Method::Post, "/notify") => {
+            check_auth(&req)?;
+            notify::send_test_notification(&env).await?;
+            Response::from_html("Test notification sent")
+        }
         _ => Response::error("Not Found", 404),
     }
 }
