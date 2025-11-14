@@ -12,7 +12,7 @@ command = "cargo install -q worker-build && worker-build --release"
 # 0 0 * * *    = daily at midnight
 # 0 9 * * 1-5  = weekdays at 9 AM
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true
